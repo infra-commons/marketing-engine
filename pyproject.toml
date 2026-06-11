@@ -1,0 +1,19 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+# E402: sys.path manipulation before imports is intentional in several modules.
+ignore = ["E402"]
+
+[tool.ruff.lint.per-file-ignores]
+# publisher.py and draft_generator.py embed long HTML/CSS template strings and
+# long prompt strings that cannot be wrapped without breaking their content.
+# queue_manager.py has one long print statement with interpolated values.
+"pipeline/publisher.py" = ["E501"]
+"pipeline/draft_generator.py" = ["E501"]
+"pipeline/queue_manager.py" = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

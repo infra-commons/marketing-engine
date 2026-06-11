@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+.env.local
+*.env
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Secrets
+secrets/
+credentials/
+*.key
+*.pem
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Unreviewed scratch drafts — don't commit
+staging/drafts/scratch/
+
+# Local scratch files
+drafts/*.txt
+scratch/
+
+# Autoloop spend ledger (billing cycle tracking — local only)
+.autoloop/

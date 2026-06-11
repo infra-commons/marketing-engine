@@ -1,0 +1,37 @@
+# {Brand} Marketing Engine — Constitution (always loaded, rarely changes)
+
+This file is the project-level anchor for every autonomous loop. Plans come and go;
+these rules do not. The agent reads this every iteration and obeys it.
+
+## What this project is
+
+A Python pipeline that drafts, gates, and publishes articles to {brand-site} on a fixed
+cadence — where content quality and compliance enforcement matter more than throughput.
+{Brand} is {brand-description}.
+
+## Stack
+- Language / runtime: Python 3.12
+- Package manager: pip (requirements.txt)
+- Test runner: pytest
+- Type checker: none
+- Linter: ruff (line-length 120; see pyproject.toml for ignored rules)
+- Python command: `python3` (not `python` — `python` is not in PATH on this server)
+
+## Hard rules (non-negotiable)
+
+1. **Never ship anything unverified.** No commit unless the plan's `verify.sh` is green.
+2. **Fail loud.** Unexpected inputs, unmapped cases, or unexpected shapes raise — never
+   default silently.
+3. **Flag uncertainty, don't guess.** If an assumption is required, record it in
+   `progress.md` under "Blocked / needs human" and stop on that item.
+4. **Never bypass or weaken the compliance gate.** `pipeline/compliance_gate.py` is a
+   hard stop — not a warning, not a log line. Any change that makes it more permissive
+   is not allowed.
+5. **One unit of work per iteration.** Small, reviewable diffs. Update progress.md every pass.
+6. **Brand config stays in the entity repo.** `brands/{slug}/` never moves to the shared pipeline.
+
+## Verification model
+
+Verification is "does the intended state exist?" — not unit tests. Each plan's verify.sh
+uses gh CLI and local file checks to confirm expected resources are present.
+Exit 0 = green, non-zero = red.
