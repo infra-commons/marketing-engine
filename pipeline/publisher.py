@@ -37,7 +37,14 @@ from pathlib import Path
 # Add repo root so local modules import cleanly
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from pipeline.brand_loader import DEFAULT_BRAND, BrandConfig, load_brand, load_footer_html, load_nav_html
+from pipeline.brand_loader import (
+    DEFAULT_BRAND,
+    BrandConfig,
+    consumer_root,
+    load_brand,
+    load_footer_html,
+    load_nav_html,
+)
 from pipeline.compliance_gate import check as compliance_check
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -789,7 +796,10 @@ def git_push_site(site_path: Path, slug: str, brand_cfg: BrandConfig, dry_run: b
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main() -> int:
-    repo_root = Path(__file__).parent.parent
+    # The consuming brand repo root: resolves drafts (repo_root / draft_path) and
+    # locates the sibling site checkout (repo_root.parent / site_local_name). Must
+    # be the brand repo, not the engine submodule — see brand_loader.consumer_root.
+    repo_root = consumer_root()
 
     parser = argparse.ArgumentParser(
         description="Publish an approved draft to a brand site.",

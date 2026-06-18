@@ -6,14 +6,39 @@ BrandConfig. Used by draft_generator, publisher, and queue_manager.
 """
 
 import importlib.util
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 
-REPO_ROOT = Path(__file__).parent.parent
-BRANDS_DIR = REPO_ROOT / "brands"
+# Where the engine's own code lives (this file's parent dir's parent). The base
+# phrase_banks.py module sits here; brand phrase_banks.py files import from it.
+# This is always correct — vendored at the repo root, or as a git submodule.
+ENGINE_ROOT = Path(__file__).parent.parent
+
+
+def consumer_root() -> Path:
+    """Root of the *consuming* brand repo — where the brand `brands/` config lives.
+
+    When the engine is vendored at the repo root, this equals ENGINE_ROOT, so the
+    default keeps the legacy layout working with no configuration. When the engine
+    is consumed as a git submodule (at e.g. `engine/`), the submodule's own
+    location is NOT the brand repo root, so the consumer must export
+    MARKETING_REPO_ROOT pointing at its repo root. (The shell entrypoints
+    `cd $(dirname $0)` into the engine dir, so CWD is not reliable here.)
+    """
+    env = os.environ.get("MARKETING_REPO_ROOT")
+    if env:
+        return Path(env).resolve()
+    return ENGINE_ROOT.resolve()
+
+
+def brands_dir() -> Path:
+    """Directory holding per-brand config (`brands/`), in the consuming repo."""
+    return consumer_root() / "brands"
+
 
 DEFAULT_BRAND = "cashbucket"
 
@@ -95,13 +120,18 @@ class BrandConfig:
 
 def load_brand(brand_slug: str) -> BrandConfig:
     """Load and return a BrandConfig for the given brand slug."""
-    brand_dir = BRANDS_DIR / brand_slug
+    root = brands_dir()
+    brand_dir = root / brand_slug
     yaml_path = brand_dir / "brand.yaml"
     if not yaml_path.exists():
-        available = [d.name for d in BRANDS_DIR.iterdir() if d.is_dir()] if BRANDS_DIR.exists() else []
+        available = [d.name for d in root.iterdir() if d.is_dir()] if root.exists() else []
+        hint = "" if root.exists() else (
+            f"\nbrands/ dir not found at {root} — if the engine is a submodule, "
+            f"export MARKETING_REPO_ROOT=<your marketing repo root>."
+        )
         raise FileNotFoundError(
             f"Brand config not found: {yaml_path}\n"
-            f"Available brands: {available}"
+            f"Available brands: {available}{hint}"
         )
     with yaml_path.open(encoding="utf-8") as f:
         d = yaml.safe_load(f)
@@ -138,9 +168,12 @@ def load_brand(brand_slug: str) -> BrandConfig:
 
 def load_phrase_banks(brand_dir: Path):
     """Dynamically load phrase_banks.py from a brand directory."""
-    repo_root = str(REPO_ROOT)
-    if repo_root not in sys.path:
-        sys.path.insert(0, repo_root)
+    # The brand phrase_banks.py does `from phrase_banks import ...`, resolving to
+    # the engine's base module — so ENGINE_ROOT (not the consumer root) goes on
+    # the path here.
+    engine_root = str(ENGINE_ROOT)
+    if engine_root not in sys.path:
+        sys.path.insert(0, engine_root)
     spec = importlib.util.spec_from_file_location(
         "brand_phrase_banks",
         brand_dir / "phrase_banks.py",
