@@ -3,6 +3,22 @@
 Shared Python pipeline for multi-brand article drafting, compliance gating, and publishing.
 Entity marketing repos keep only `brands/{name}/` config; all pipeline logic lives here.
 
+## Consuming the engine as a submodule
+
+When this repo is vendored at a brand repo's root, no configuration is needed.
+When it is consumed as a git submodule (e.g. at `engine/`), the engine cannot
+infer the brand repo's location from its own path, so the consumer **must**
+export the brand repo root before invoking any pipeline script:
+
+```bash
+export MARKETING_REPO_ROOT=/path/to/your/marketing  # where brands/ lives
+```
+
+`brand_loader.consumer_root()` reads this (falling back to the engine root for
+the legacy vendored layout). It locates `brands/` and the sibling site checkout;
+the engine's own base modules (`phrase_banks.py`, `banned_phrases.py`) are always
+resolved relative to the engine itself.
+
 ## How to add a new brand
 
 1. In your entity's marketing repo, create `brands/{slug}/`:
