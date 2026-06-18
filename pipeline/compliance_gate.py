@@ -408,6 +408,91 @@ def _first_word(paragraph: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Topic-overlap check (opt-in) — hard-fail if a new article's subject area
+# duplicates an already-published one. Disabled unless a caller passes clusters
+# (or the publisher enables it via brand config), so default behaviour is unchanged.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Default NZ SME topic clusters. A single term from a cluster assigns an article
+# to that cluster; two articles in the same cluster are flagged as overlapping.
+# Brands can override by passing their own `clusters` to check_topic_overlap.
+DEFAULT_TOPIC_CLUSTERS: list[frozenset[str]] = [
+    frozenset({"ocr", "cash rate", "rbnz", "overdraft", "interest rate"}),  # RBNZ / lending rates
+    frozenset({"minimum wage"}),                                             # Minimum wage
+    frozenset({"paye"}),                                                     # PAYE
+    frozenset({"provisional tax", "tax instalment"}),                        # Provisional tax
+    frozenset({"gst"}),                                                      # GST
+    frozenset({"kiwisaver"}),                                                # KiwiSaver
+    frozenset({"construction", "retention"}),                                # Construction sector
+    frozenset({"hospitality"}),                                              # Hospitality sector
+    frozenset({"retail"}),                                                   # Retail sector
+    frozenset({"invoice financing"}),                                        # Invoice finance
+    frozenset({"late payment"}),                                             # Late payments
+    frozenset({"cash flow forecast"}),                                       # Cash flow planning
+    frozenset({"annual leave"}),                                             # Annual leave
+]
+
+
+def _matched_clusters(
+    slug: str, description: str, title: str, clusters: list[frozenset[str]]
+) -> list[int]:
+    """Return indices of topic clusters that this article belongs to."""
+    text = f"{slug} {description} {title}".lower()
+    return [i for i, cluster in enumerate(clusters) if any(term in text for term in cluster)]
+
+
+def check_topic_overlap(
+    slug: str,
+    description: str,
+    title: str,
+    published_articles: list[dict],
+    clusters: list[frozenset[str]] | None = None,
+) -> list[str]:
+    """
+    Hard fail if the new article's topic overlaps with a published article.
+
+    Uses topic clusters: if both the new article and a published article match
+    the same cluster (e.g. both mention OCR / RBNZ / overdraft), they are in the
+    same subject area and the new article is blocked.
+
+    Args:
+        slug:               URL slug of the new article
+        description:        One-sentence description
+        title:              Article title
+        published_articles: List of dicts with "slug", "description", "title" keys
+        clusters:           Topic clusters to match against. None => DEFAULT_TOPIC_CLUSTERS.
+
+    Returns:
+        List of flag strings (empty = no overlap detected)
+    """
+    if clusters is None:
+        clusters = DEFAULT_TOPIC_CLUSTERS
+
+    new_clusters = set(_matched_clusters(slug, description, title, clusters))
+    if not new_clusters:
+        return []
+
+    flags = []
+    for pub in published_articles:
+        pub_clusters = set(_matched_clusters(
+            pub.get("slug", ""),
+            pub.get("description", ""),
+            pub.get("title", ""),
+            clusters,
+        ))
+        shared = new_clusters & pub_clusters
+        if shared:
+            cluster_names = [sorted(clusters[i])[0] for i in shared]
+            pub_slug = pub.get("slug", "?")
+            flags.append(
+                f"Topic overlap with published article '{pub_slug}': "
+                f"same subject area ({', '.join(sorted(cluster_names))}) — too similar to publish. "
+                f"Either retire the published article or choose a clearly different angle."
+            )
+    return flags
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
