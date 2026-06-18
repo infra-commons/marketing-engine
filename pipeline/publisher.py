@@ -589,6 +589,24 @@ def build_article_card(
 # articles.html update
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _normalise_title(title: str) -> str:
+    """Strip punctuation + lowercase for fuzzy duplicate detection."""
+    return re.sub(r"[^\w\s]", "", title.lower()).strip()
+
+
+def _find_duplicate_title(title: str, site_path: Path, brand_cfg: BrandConfig) -> str | None:
+    """Return the existing card title if it matches `title` (normalised), else None."""
+    articles_html_path = site_path / brand_cfg.articles_index
+    if not articles_html_path.exists():
+        return None
+    content = articles_html_path.read_text(encoding="utf-8")
+    norm_new = _normalise_title(title)
+    for existing in re.findall(r"<h2>([^<]+)</h2>", content):
+        if _normalise_title(existing) == norm_new:
+            return existing
+    return None
+
+
 def insert_card_into_articles_index(
     site_path: Path,
     card_html: str,
@@ -900,6 +918,15 @@ def main() -> int:
     print(f"  Slug: {slug}")
     print(f"  Description: {description[:80]}…")
     print(f"  Read time: {mins} min")
+
+    # ── 3b. Title duplicate check ─────────────────────────────────────────────
+    existing = _find_duplicate_title(title, site_path, brand_cfg)
+    if existing:
+        print(
+            f"ERROR: Title already published: '{existing}' — duplicate publish blocked.",
+            file=sys.stderr,
+        )
+        return 1
 
     # ── 4. Fetch hero image ───────────────────────────────────────────────────
     print("[4/7] Fetching hero image from Unsplash…")
