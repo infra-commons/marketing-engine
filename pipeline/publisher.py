@@ -41,11 +41,13 @@ from pipeline.brand_loader import (
     DEFAULT_BRAND,
     BrandConfig,
     consumer_root,
+    load_article_cta,
     load_brand,
     load_footer_html,
     load_nav_html,
 )
 from pipeline.compliance_gate import check as compliance_check
+from pipeline.compliance_gate import check_topic_overlap
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Unsplash hero image
@@ -389,6 +391,19 @@ def build_article_html(
 
     canonical = f"{brand_cfg.article_url_base}/{slug}.html"
 
+    # CTA block: a brand may override the default demo-button CTA with its own
+    # self-contained article_cta.html fragment (e.g. a newsletter signup form).
+    cta_section = load_article_cta(brand_cfg.brand_dir) or f"""<section class="art-cta">
+  <div class="art-cta-inner">
+    <h2>{brand_cfg.cta_headline}</h2>
+    <p>{brand_cfg.cta_body}</p>
+    <div class="art-cta-btns">
+      <a href="{brand_cfg.cta_booking_url}" target="_blank" class="btn-white">{brand_cfg.cta_btn_primary}</a>
+      <a href="{brand_cfg.cta_contact_url}" class="btn-white-outline">{brand_cfg.cta_btn_secondary}</a>
+    </div>
+  </div>
+</section>"""
+
     return f"""<!DOCTYPE html>
 <html lang="en-NZ">
 <head>
@@ -529,16 +544,7 @@ def build_article_html(
   </div>
 </section>
 
-<section class="art-cta">
-  <div class="art-cta-inner">
-    <h2>{brand_cfg.cta_headline}</h2>
-    <p>{brand_cfg.cta_body}</p>
-    <div class="art-cta-btns">
-      <a href="{brand_cfg.cta_booking_url}" target="_blank" class="btn-white">{brand_cfg.cta_btn_primary}</a>
-      <a href="{brand_cfg.cta_contact_url}" class="btn-white-outline">{brand_cfg.cta_btn_secondary}</a>
-    </div>
-  </div>
-</section>
+{cta_section}
 
 {footer_html}
 </body>
@@ -736,6 +742,54 @@ def _get_gh_token(brand_cfg: BrandConfig) -> str:
     return ""
 
 
+_SITEMAP_ARTICLE_MARKER = "<!-- Articles -->"
+
+
+def update_sitemap(site_path: Path, slug: str, pub_date: str, brand_cfg: BrandConfig) -> None:
+    """Insert a new article <url> entry into sitemap.xml and refresh articles.html lastmod.
+
+    No-ops gracefully if the sitemap or its Articles marker is absent. Opt-in via
+    the brand's workflow.update_sitemap config."""
+    sitemap_rel = brand_cfg.workflow.get("sitemap_path", "site/sitemap.xml")
+    sitemap_path = site_path / sitemap_rel
+    if not sitemap_path.exists():
+        print("  ⚠  sitemap.xml not found — skipping sitemap update.")
+        return
+
+    content = sitemap_path.read_text(encoding="utf-8")
+
+    article_loc = f"{brand_cfg.site_url}/articles/{slug}.html"
+    new_entry = (
+        f"\n  <url>\n"
+        f"    <loc>{article_loc}</loc>\n"
+        f"    <lastmod>{pub_date}</lastmod>\n"
+        f"    <changefreq>yearly</changefreq>\n"
+        f"    <priority>0.6</priority>\n"
+        f"  </url>"
+    )
+
+    marker_idx = content.find(_SITEMAP_ARTICLE_MARKER)
+    if marker_idx == -1:
+        print("  ⚠  Articles marker not found in sitemap.xml — skipping sitemap update.")
+        return
+    if article_loc in content:
+        print(f"  ⚠  {slug} already in sitemap.xml — skipping.")
+        return
+
+    insert_at = marker_idx + len(_SITEMAP_ARTICLE_MARKER)
+    content = content[:insert_at] + new_entry + content[insert_at:]
+
+    # Refresh articles.html lastmod
+    content = re.sub(
+        r"(<loc>https?://[^<]+/articles\.html</loc>\s*\n\s*<lastmod>)[^<]+(</lastmod>)",
+        rf"\g<1>{pub_date}\g<2>",
+        content,
+    )
+
+    sitemap_path.write_text(content, encoding="utf-8")
+    print(f"  ✓ sitemap.xml updated → {article_loc}")
+
+
 def git_push_site(site_path: Path, slug: str, brand_cfg: BrandConfig, dry_run: bool = False) -> None:
     """Commit article to a publish branch and open a PR with auto-merge."""
     token = _get_gh_token(brand_cfg)
@@ -750,6 +804,10 @@ def git_push_site(site_path: Path, slug: str, brand_cfg: BrandConfig, dry_run: b
     hero_img = site_path / brand_cfg.assets_path / f"art-{slug}.jpg"
     if hero_img.exists():
         files_to_stage.append(f"{brand_cfg.assets_path}/art-{slug}.jpg")
+    if brand_cfg.workflow.get("update_sitemap"):
+        sitemap_rel = brand_cfg.workflow.get("sitemap_path", "site/sitemap.xml")
+        if (site_path / sitemap_rel).exists():
+            files_to_stage.append(sitemap_rel)
     _run(["git", "add"] + files_to_stage, cwd=site_path)
 
     status = _run(["git", "diff", "--cached", "--name-only"], cwd=site_path)
@@ -928,6 +986,24 @@ def main() -> int:
         )
         return 1
 
+    # ── 3c. Topic-overlap check (opt-in: workflow.topic_overlap) ───────────────
+    if brand_cfg.workflow.get("topic_overlap"):
+        print("[3c/7] Checking topic overlap with published articles…")
+        if brand_cfg.queue_path.exists():
+            queue_data = json.loads(brand_cfg.queue_path.read_text(encoding="utf-8"))
+            published = [a for a in queue_data if a.get("status") == "published"]
+            overlap_flags = check_topic_overlap(slug, description, title, published)
+            if overlap_flags:
+                for f in overlap_flags:
+                    print(f"    • {f}", file=sys.stderr)
+                print(
+                    "\n  Article blocked: topic too similar to a published article.\n"
+                    "  Either retire the published article first, or choose a different angle.",
+                    file=sys.stderr,
+                )
+                return 1
+        print("  ✓ No topic overlap")
+
     # ── 4. Fetch hero image ───────────────────────────────────────────────────
     print("[4/7] Fetching hero image from Unsplash…")
     unsplash_key = os.environ.get(brand_cfg.unsplash_key_env, "")
@@ -981,8 +1057,14 @@ def main() -> int:
         article_out.unlink(missing_ok=True)
         return 1
 
-    print("  Generating social variants…")
-    generate_social_variants(title, body, slug, brief, args.publish_date, brand_cfg)
+    if brand_cfg.workflow.get("social", "engine") != "none":
+        print("  Generating social variants…")
+        generate_social_variants(title, body, slug, brief, args.publish_date, brand_cfg)
+
+    # ── Update sitemap (opt-in: workflow.update_sitemap) ──────────────────────
+    if brand_cfg.workflow.get("update_sitemap"):
+        print("  Updating sitemap.xml…")
+        update_sitemap(site_path, slug, args.publish_date, brand_cfg)
 
     # ── 8. Commit + push ──────────────────────────────────────────────────────
     print("[8/7] Committing and pushing to site repo…")

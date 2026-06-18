@@ -241,3 +241,14 @@ def load_footer_html(brand_dir: Path) -> str:
     """Load footer.html from a brand directory."""
     footer_path = brand_dir / "footer.html"
     return footer_path.read_text(encoding="utf-8").strip() if footer_path.exists() else ""
+
+
+def load_article_cta(brand_dir: Path) -> str:
+    """Load an optional article_cta.html fragment from a brand directory.
+
+    Returns "" if absent — the publisher then renders its built-in default CTA.
+    A brand supplies this fragment (a self-contained <section> + any <style>/
+    <script>) to override the call-to-action block at the foot of each article
+    (e.g. a newsletter signup form instead of the default demo buttons)."""
+    cta_path = brand_dir / "article_cta.html"
+    return cta_path.read_text(encoding="utf-8").strip() if cta_path.exists() else ""
