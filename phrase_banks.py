@@ -58,7 +58,7 @@ TRANSITIONS = [
     "That holds true until it doesn't.",
 
     # Elaboration (specific)
-    "Here's what that looks like in practice.",
+    "Look at how this plays out in practice.",
     "The numbers back this up.",
     "Put another way:",
     "To make this concrete:",
@@ -72,7 +72,7 @@ TRANSITIONS = [
     "For seasonal operators, the calculation shifts.",
 
     # Causation
-    "The reason this matters is",
+    "What this comes down to is",
     "What drives this is straightforward:",
     "It comes down to timing.",
     "Cash flow is the mechanism.",

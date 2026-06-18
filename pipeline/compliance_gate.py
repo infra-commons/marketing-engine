@@ -28,7 +28,15 @@ from pathlib import Path
 
 # Add parent dir so we can import banned_phrases from repo root
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from banned_phrases import BANNED_PHRASES, EM_DASH_CHARS, LEVERAGE_SYNONYMS, DELVE_SYNONYMS, UNLOCK_SYNONYMS
+from banned_phrases import (
+    BANNED_PHRASES,
+    EM_DASH_CHARS,
+    LEVERAGE_SYNONYMS,
+    DELVE_SYNONYMS,
+    UNLOCK_SYNONYMS,
+    TITLE_EM_DASH_CHARS,
+    TITLE_CLICHES,
+)
 
 ALL_BANNED = BANNED_PHRASES + LEVERAGE_SYNONYMS + DELVE_SYNONYMS + UNLOCK_SYNONYMS
 
@@ -162,6 +170,34 @@ def _check_lexical(text: str) -> list[str]:
     lower = text.lower()
     found = [phrase for phrase in ALL_BANNED if phrase in lower]
     return [f"Banned phrase: '{phrase}'" for phrase in found]
+
+
+def _check_title(title: str) -> list[str]:
+    """
+    Hard fail: AI tells in the headline itself.
+
+    The title is rendered verbatim into <title>/<h1>/<h2>/social-meta/image-alt,
+    so it is screened directly — the body checks never see it. Three rules:
+      1. No em dash (em/en dash or &mdash;) — a strong AI tell in a headline,
+         even though body prose may use it.
+      2. No banned lexical phrase (reuses ALL_BANNED).
+      3. No explainer-cliché tail ("… — Here's Why It Matters", "What You Need
+         to Know", etc.).
+    """
+    flags = []
+    if not title:
+        return flags
+
+    for char in TITLE_EM_DASH_CHARS:
+        if char in title:
+            flags.append(f"Title contains em/en dash ('{char}') — AI tell in headlines")
+            break
+
+    lower = title.lower()
+    flags += [f"Title banned phrase: '{phrase}'" for phrase in ALL_BANNED if phrase in lower]
+    flags += [f"Title explainer cliché: '{cliche}'" for cliche in TITLE_CLICHES if cliche in lower]
+
+    return flags
 
 
 def _check_structural(text: str) -> list[str]:
@@ -403,6 +439,9 @@ def check(
     brand_flags, brand_warnings = _check_brand_mention(text, brand_name)
     all_flags += brand_flags
     all_warnings += brand_warnings
+
+    # Title AI-tell check (em dash / banned phrase / explainer cliché)
+    all_flags += _check_title(title)
 
     # Title restatement check
     if title:
