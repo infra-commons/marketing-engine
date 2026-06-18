@@ -41,7 +41,9 @@ from pipeline.compliance_gate import GateResult, check as gate_check
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
 
-MODEL = "claude-opus-4-8"
+# Default model is opus; a consumer can override per-run via the MODEL env var
+# (e.g. a brand that runs on a cheaper tier sets MODEL=claude-sonnet-4-6).
+MODEL = os.environ.get("MODEL") or "claude-opus-4-8"
 MAX_TOKENS = 4000  # Opus produces denser output; extra headroom for retry
 
 ALL_BANNED = BANNED_PHRASES + LEVERAGE_SYNONYMS + DELVE_SYNONYMS + UNLOCK_SYNONYMS
@@ -255,7 +257,7 @@ def _auto_output_path(brief: dict, brand_cfg: BrandConfig) -> Path:
 
     v = 1
     while True:
-        path = brand_cfg.review_dir / f"draft-{num}-v{v}.md"
+        path = brand_cfg.draft_output_dir / f"draft-{num}-v{v}.md"
         if not path.exists():
             return path
         v += 1
@@ -412,6 +414,28 @@ def generate(
                 print(f"    ✗ {flag}")
             for warn in result.warnings:
                 print(f"    ⚠  {warn}")
+
+    # ── Fact check (opt-in: brand sets workflow.fact_check) ───────────────────
+    if brand_cfg.workflow.get("fact_check"):
+        from pipeline.fact_checker import check as fact_check  # local: optional dep
+
+        if verbose:
+            print("\n🔎  Running fact check...")
+        fc_result = fact_check(article, brief=brief, api_key=api_key)
+        if verbose:
+            fc_status = "PASS ✓" if fc_result.passed else f"FAIL ✗ ({len(fc_result.flags)} error(s))"
+            print(f"    Fact check: {fc_status}")
+            for flag in fc_result.flags:
+                print(f"    ✗ {flag}")
+            for warn in fc_result.warnings:
+                print(f"    ⚠  {warn}")
+        if not fc_result.passed:
+            print(
+                "\n❌  Fact check failed — draft has numerical errors. Do not publish.\n"
+                "    Fix the brief's key_facts and regenerate.\n",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     # ── Resolve output path ──────────────────────────────────────────────────
     if output_path:

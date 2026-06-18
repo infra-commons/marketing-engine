@@ -8,7 +8,7 @@ BrandConfig. Used by draft_generator, publisher, and queue_manager.
 import importlib.util
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -82,6 +82,23 @@ class BrandConfig:
     # Social
     social: dict
 
+    # --- Optional, brand-opt-in (defaults preserve the legacy/rolliq behaviour) ---
+    # Article-end newsletter signup CTA (empty string => no newsletter CTA rendered).
+    newsletter_signup_url: str = ""
+    newsletter_cta_headline: str = ""
+    newsletter_cta_body: str = ""
+    # Channel config dicts, consumed by brand-local tools (MailerLite/Buffer/analytics).
+    # Empty dict => channel inactive for this brand.
+    newsletter: dict = field(default_factory=dict)
+    buffer: dict = field(default_factory=dict)
+    analytics: dict = field(default_factory=dict)
+    # Workflow config. Controls staging-dir layout + approval model so the engine
+    # can serve both the dir-move workflow (review/ -> approved/, default) and the
+    # status-flag workflow (single drafts/ dir + explicit `approve` command).
+    #   draft_dir: name of the dir draft_generator writes to       (default "review")
+    #   approval:  "dirmove" (move file review/->approved/) | "status" (flag in queue)
+    workflow: dict = field(default_factory=dict)
+
     @property
     def staging_dir(self) -> Path:
         return self.brand_dir / "staging"
@@ -101,6 +118,30 @@ class BrandConfig:
     @property
     def social_dir(self) -> Path:
         return self.staging_dir / "social"
+
+    # --- Optional staging dirs used by the status-flag workflow / brand tools ---
+    @property
+    def drafts_dir(self) -> Path:
+        return self.staging_dir / "drafts"
+
+    @property
+    def topics_dir(self) -> Path:
+        return self.staging_dir / "topics"
+
+    @property
+    def campaigns_dir(self) -> Path:
+        return self.staging_dir / "campaigns"
+
+    @property
+    def approval_model(self) -> str:
+        """'dirmove' (default) or 'status'."""
+        return self.workflow.get("approval", "dirmove")
+
+    @property
+    def draft_output_dir(self) -> Path:
+        """Dir draft_generator writes new drafts to. Defaults to review_dir for the
+        dir-move workflow; status-flag brands point this at drafts/."""
+        return self.staging_dir / self.workflow.get("draft_dir", "review")
 
     @property
     def queue_path(self) -> Path:
@@ -163,6 +204,13 @@ def load_brand(brand_slug: str) -> BrandConfig:
         hero_gradients=d["hero_gradients"],
         article_type_labels=d["article_type_labels"],
         social=d["social"],
+        newsletter_signup_url=d.get("newsletter_signup_url", ""),
+        newsletter_cta_headline=d.get("newsletter_cta_headline", ""),
+        newsletter_cta_body=d.get("newsletter_cta_body", ""),
+        newsletter=d.get("newsletter", {}),
+        buffer=d.get("buffer", {}),
+        analytics=d.get("analytics", {}),
+        workflow=d.get("workflow", {}),
     )
 
 
@@ -193,3 +241,14 @@ def load_footer_html(brand_dir: Path) -> str:
     """Load footer.html from a brand directory."""
     footer_path = brand_dir / "footer.html"
     return footer_path.read_text(encoding="utf-8").strip() if footer_path.exists() else ""
+
+
+def load_article_cta(brand_dir: Path) -> str:
+    """Load an optional article_cta.html fragment from a brand directory.
+
+    Returns "" if absent — the publisher then renders its built-in default CTA.
+    A brand supplies this fragment (a self-contained <section> + any <style>/
+    <script>) to override the call-to-action block at the foot of each article
+    (e.g. a newsletter signup form instead of the default demo buttons)."""
+    cta_path = brand_dir / "article_cta.html"
+    return cta_path.read_text(encoding="utf-8").strip() if cta_path.exists() else ""
