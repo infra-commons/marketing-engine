@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pipeline.brand_loader import (  # noqa: E402
     ENGINE_ROOT,
+    _validate_site_subpath,
     brands_dir,
     consumer_root,
     load_brand,
@@ -56,3 +57,34 @@ class TestLoadBrandErrors:
         with pytest.raises(FileNotFoundError) as exc:
             load_brand("ghostbrand")
         assert "realbrand" in str(exc.value)
+
+
+class TestValidateSiteSubpath:
+    """Guard against path traversal in brand-config site-relative paths.
+
+    These values are joined onto the site repo checkout, and publisher echoes
+    index content back in its duplicate-title error — so a `..`/absolute value
+    is a path-traversal + exfiltration vector (rolliq-com/marketing#75).
+    """
+
+    def test_accepts_plain_relative_path(self):
+        assert _validate_site_subpath("articles_index", "articles.html") == "articles.html"
+
+    def test_accepts_nested_relative_path(self):
+        assert _validate_site_subpath("articles_path", "site/articles") == "site/articles"
+
+    def test_accepts_empty_value(self):
+        # Optional fields may be empty; nothing to traverse.
+        assert _validate_site_subpath("assets_path", "") == ""
+
+    def test_rejects_parent_traversal(self):
+        with pytest.raises(ValueError, match="relative path within the site repo"):
+            _validate_site_subpath("articles_index", "../../etc/passwd")
+
+    def test_rejects_traversal_mid_path(self):
+        with pytest.raises(ValueError):
+            _validate_site_subpath("articles_index", "site/../../secret.json")
+
+    def test_rejects_absolute_path(self):
+        with pytest.raises(ValueError, match="no leading '/'"):
+            _validate_site_subpath("assets_path", "/etc/passwd")
