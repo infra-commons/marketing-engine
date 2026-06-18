@@ -81,10 +81,28 @@ def _emit_warning(message: str) -> None:
 def cmd_next(args: argparse.Namespace) -> int:
     cfg = load_brand(args.brand)
     queue = load_queue(args.brand)
-    item = next((q for q in queue if q.get("status") == "queued"), None)
+    # Dir-move workflow publishes the next "queued" item directly. Status-flag
+    # brands gate publishing behind an explicit approve step, so "next" is the
+    # first item already moved to "approved".
+    ready_status = "approved" if cfg.approval_model == "status" else "queued"
+    item = next((q for q in queue if q.get("status") == ready_status), None)
 
     if item is None:
-        print("Queue is empty — nothing to publish.")
+        if cfg.approval_model == "status":
+            pending = sum(1 for q in queue if q.get("status") == "queued")
+            if pending:
+                msg = (
+                    f"No approved articles — {pending} queued and waiting for approval. "
+                    f"Approve via dashboard or: "
+                    f"python3 -m pipeline.queue_manager --brand {args.brand} approve <slug>"
+                )
+                print(msg)
+                if os.environ.get("GITHUB_ACTIONS"):
+                    print(f"::notice::{msg}")
+            else:
+                print("Queue is empty — nothing to publish.")
+        else:
+            print("Queue is empty — nothing to publish.")
         if args.output_env:
             print("QUEUE_DRAFT_PATH=")
             print("QUEUE_SLUG=")
@@ -130,6 +148,58 @@ def cmd_mark_published(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_approve(args: argparse.Namespace) -> int:
+    """Approve a queued article (status-flag workflow): queued -> approved."""
+    queue = load_queue(args.brand)
+    slug = args.slug
+
+    found = False
+    for item in queue:
+        if item.get("slug") == slug:
+            current = item.get("status")
+            if current == "approved":
+                print(f"Already approved: {slug}")
+                return 0
+            if current != "queued":
+                print(
+                    f"ERROR: Cannot approve '{slug}' — status is '{current}' (must be 'queued').",
+                    file=sys.stderr,
+                )
+                return 1
+            item["status"] = "approved"
+            found = True
+            break
+
+    if not found:
+        print(f"ERROR: No queue item found with slug='{slug}'", file=sys.stderr)
+        return 1
+
+    save_queue(args.brand, queue)
+    print(f"Approved: {slug}")
+    print("It will be published on the next publish run.")
+
+    if getattr(args, "push", False):
+        import subprocess
+        cfg = load_brand(args.brand)
+        # publish_queue.json -> staging -> <brand> -> brands -> consumer repo root
+        repo_root = cfg.queue_path.parents[3]
+        queue_rel = str(cfg.queue_path.relative_to(repo_root))
+        try:
+            subprocess.run(["git", "add", queue_rel], cwd=repo_root, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", f"queue: approve {slug}"],
+                cwd=repo_root, check=True,
+            )
+            subprocess.run(["git", "pull", "--rebase"], cwd=repo_root, check=True)
+            subprocess.run(["git", "push"], cwd=repo_root, check=True)
+            print("Pushed approval to remote.")
+        except subprocess.CalledProcessError as e:
+            print(f"ERROR: git operation failed: {e}", file=sys.stderr)
+            return 1
+
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     queue = load_queue(args.brand)
     cfg = load_brand(args.brand)
@@ -140,18 +210,41 @@ def cmd_status(args: argparse.Namespace) -> int:
     total = len(queue)
     published = sum(1 for q in queue if q.get("status") == "published")
     queued = sum(1 for q in queue if q.get("status") == "queued")
+    approved = sum(1 for q in queue if q.get("status") == "approved")
     pending = sum(1 for q in queue if q.get("status") == "pending_review")
+    on_hold = sum(1 for q in queue if q.get("status") == "hold")
 
-    print(f"\n{cfg.display_name} publish queue: {published}/{total} published, {queued} queued, {pending} pending review\n")
-    print(f"{'#':<4} {'Status':<12} {'Draft':<30} {'Slug'}")
-    print("-" * 90)
+    print(f"\n{cfg.display_name} publish queue: {published}/{total} published")
+    if cfg.approval_model == "status":
+        print(f"  Approved (ready to publish):  {approved}")
+        print(f"  Queued (needs approval):      {queued}")
+        print(f"  On hold:                      {on_hold}")
+        next_approved = next((q for q in queue if q.get("status") == "approved"), None)
+        next_queued = next((q for q in queue if q.get("status") == "queued"), None)
+        if next_approved:
+            print(f"\n  Next publish: {next_approved.get('slug')}  [approved]")
+        elif next_queued:
+            print(f"\n  Next up (needs approval): {next_queued.get('slug')}")
+            print(
+                f"  → Approve: python3 -m pipeline.queue_manager --brand {args.brand} "
+                f"approve {next_queued.get('slug')}"
+            )
+        else:
+            print("\n  Nothing queued — add articles to resume cadence.")
+    else:
+        print(f"  Queued:         {queued}")
+        if pending:
+            print(f"  Pending review: {pending}")
+
+    print(f"\n{'#':<4} {'Status':<22} {'Draft':<32} Slug")
+    print("-" * 95)
     for i, item in enumerate(queue, 1):
         status = item.get("status", "queued")
         draft = Path(item["draft_path"]).name
         slug = item.get("slug", "")
         pub_date = item.get("published_at", "")
-        status_str = f"{status}" if not pub_date else f"published {pub_date}"
-        print(f"{i:<4} {status_str:<22} {draft:<30} {slug}")
+        status_str = f"published {pub_date}" if pub_date else status
+        print(f"{i:<4} {status_str:<22} {draft:<32} {slug}")
     print()
     return 0
 
@@ -173,6 +266,16 @@ def main() -> int:
         help="Output as GitHub Actions env var lines",
     )
     p_next.set_defaults(func=cmd_next)
+
+    # approve (status-flag workflow)
+    p_approve = sub.add_parser("approve", help="Approve a queued article for the next publish run")
+    p_approve.add_argument("slug", help="Article slug as stored in publish_queue.json")
+    p_approve.add_argument(
+        "--push",
+        action="store_true",
+        help="Commit and push the approval to the remote immediately",
+    )
+    p_approve.set_defaults(func=cmd_approve)
 
     # mark-published
     p_mark = sub.add_parser("mark-published", help="Mark a draft as published")
