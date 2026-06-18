@@ -31,11 +31,14 @@ OPENERS = [
 
     # Sector/seasonal type
     "Every {NZ_SPECIFIC}, the same pattern plays out across New Zealand: businesses that planned for it six weeks ago are fine; businesses that didn't are scrambling.",
-    "The {NZ_SPECIFIC} is not news to anyone running a business in this sector — but knowing it's coming and being ready for it are different things.",
+    "The {NZ_SPECIFIC} is not news to anyone running a business in this sector, but knowing it's coming and being ready for it are different things.",
 
     # Founder voice type
     "Most of the business owners we talk to already know {NZ_SPECIFIC} is a problem. What they're less clear on is what to do about it before it becomes a crisis.",
     "There's a version of {NZ_SPECIFIC} that ruins a business quietly. It doesn't announce itself. It just compresses your margins by a few percent until, one quarter, you notice the number has turned.",
+    "You probably already know about {NZ_SPECIFIC}. What you might not have had time to work out is what it means for your cash position specifically.",
+    "If {NZ_SPECIFIC} hasn't come up in your business conversations yet, it will. Here's what you need to know before it does.",
+    "The businesses that handle {NZ_SPECIFIC} well aren't doing anything complicated. They're just doing it earlier than everyone else.",
 
     # Contrarian/specific opener
     "The conventional advice on {NZ_SPECIFIC} is fine as far as it goes, which is not very far.",
@@ -58,7 +61,7 @@ TRANSITIONS = [
     "That holds true until it doesn't.",
 
     # Elaboration (specific)
-    "Look at how this plays out in practice.",
+    "Here's what that looks like in practice.",
     "The numbers back this up.",
     "Put another way:",
     "To make this concrete:",
@@ -72,7 +75,7 @@ TRANSITIONS = [
     "For seasonal operators, the calculation shifts.",
 
     # Causation
-    "What this comes down to is",
+    "The reason this matters is",
     "What drives this is straightforward:",
     "It comes down to timing.",
     "Cash flow is the mechanism.",
@@ -91,18 +94,18 @@ CASHBUCKET_CTAS = [
         "For businesses that want a closer view of their cash position without building it "
         "from scratch in a spreadsheet, Cashbucket is worth looking at. It's built for "
         "NZ-based SMEs, connects to Xero, and gives you a rolling forward view of your "
-        "cash — not just what happened last month."
+        "cash, not just what happened last month."
     ),
     (
         "One tool that a number of NZ SMEs use for this kind of visibility is Cashbucket. "
         "It's not the only option, but it's designed specifically around the way cash "
-        "moves through a small business — receivables timing, payroll cycles, seasonal "
-        "dips — rather than being a general-purpose accounting view."
+        "moves through a small business: receivables timing, payroll cycles, seasonal "
+        "dips, rather than a general-purpose accounting view."
     ),
     (
         "If you're currently managing this in a spreadsheet that's become unwieldy, "
         "Cashbucket is worth a look. It connects directly to Xero and gives you a "
-        "forward-looking cash model that updates as your actual figures come in — "
+        "forward-looking cash model that updates as your actual figures come in, "
         "useful when the next 90 days matter more than last quarter's report."
     ),
     (
@@ -112,7 +115,7 @@ CASHBUCKET_CTAS = [
         "depends on your setup, but the problem it's solving is the one described above."
     ),
     (
-        "Tools like Cashbucket are built around this premise — that a business owner "
+        "Tools like Cashbucket are built around this premise: that a business owner "
         "needs a cash view that's forward-looking and tied to real numbers, not a "
         "monthly summary that's already three weeks out of date by the time you read it. "
         "Worth a look if this resonates."
@@ -130,7 +133,7 @@ CLOSES = [
     "The businesses that handle this well aren't smarter than average. They just check the numbers more often.",
     "None of this is complicated. The hard part is making it a habit before you need it.",
     "A good cash forecast doesn't guarantee anything. But it does mean you'll see the problem in time to do something about it.",
-    "The alternative — waiting until the pressure is obvious — is a strategy too, just not one many business owners would choose if they thought it through.",
+    "The alternative (waiting until the pressure is obvious) is a strategy too, just not one many business owners would choose if they thought it through.",
     "What makes the difference, consistently, is visibility and speed. Not one or the other. Both.",
     "Run the scenario. You might be fine. But you'll know, rather than guess.",
     "It's a solvable problem. Most of the businesses that have gone through this are glad they dealt with it before they had to.",

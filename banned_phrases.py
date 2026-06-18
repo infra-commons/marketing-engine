@@ -1,5 +1,5 @@
 """
-Banned phrase lockfile for the Rolliq content compliance gate.
+Banned phrase lockfile for the shared content compliance gate (all brands).
 
 This is the single source of truth. To add a phrase, open a PR against this file.
 Phrases are matched case-insensitively. The gate hard-fails on any match.
