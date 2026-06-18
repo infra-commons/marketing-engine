@@ -140,3 +140,39 @@ class TestTitleRestatement:
         result = check(text, title=title, brand_name=BRAND)
         assert not result.passed
         assert any("restate" in f.lower() for f in result.flags)
+
+
+class TestTitleAITells:
+    # Regression: rolliq-com/website PR #80 published a title that read
+    # "...Both Overstated and Understated — Here's Why It Matters" — an em dash
+    # AND an explainer cliché — because the title was passed to check() but only
+    # used for the restatement test, never screened for tells.
+
+    def test_title_em_dash_fails(self):
+        title = "The 29% AI Adoption Figure Is Overstated and Understated — Here's Why It Matters"
+        result = check(COMPLIANT_ARTICLE, title=title, brand_name=BRAND)
+        assert not result.passed
+        assert any("em/en dash" in f.lower() for f in result.flags)
+
+    def test_title_explainer_cliche_fails(self):
+        title = "The 29% AI Adoption Figure: Here's Why It Matters"
+        result = check(COMPLIANT_ARTICLE, title=title, brand_name=BRAND)
+        assert not result.passed
+        assert any("cliché" in f.lower() or "banned phrase" in f.lower() for f in result.flags)
+
+    def test_title_what_you_need_to_know_fails(self):
+        title = "NZ Provisional Tax in 2026: What You Need to Know"
+        result = check(COMPLIANT_ARTICLE, title=title, brand_name=BRAND)
+        assert not result.passed
+        assert any("cliché" in f.lower() for f in result.flags)
+
+    def test_title_banned_phrase_fails(self):
+        title = "Streamline Your Provisional Tax Workflow"
+        result = check(COMPLIANT_ARTICLE, title=title, brand_name=BRAND)
+        assert not result.passed
+        assert any("title banned phrase" in f.lower() for f in result.flags)
+
+    def test_clean_title_passes(self):
+        title = "Provisional Tax Catches Small Firms Short Each March"
+        result = check(COMPLIANT_ARTICLE, title=title, brand_name=BRAND)
+        assert result.passed, "Clean title should not fail. Flags:\n" + "\n".join(result.flags)

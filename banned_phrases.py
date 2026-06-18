@@ -125,6 +125,43 @@ BANNED_PHRASES = [
     "deep dive into",
     "let's dive into",
     "we'll dive into",
+
+    # Explainer-headline clichés — the "here's why this is significant" tell.
+    # Strong forms only (low false-positive); looser title-only tells live in
+    # TITLE_CLICHES below.
+    "here's why it matters",
+    "here's why that matters",
+    "here's what it means",
+    "here's what that means",
+    "here's what that looks like",
+    "the reason this matters is",
+    "what this means for you",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TITLE-ONLY TELLS — applied to the headline/title, not the body
+# ─────────────────────────────────────────────────────────────────────────────
+# The title is the highest-visibility surface: it is rendered verbatim into the
+# <title>, <h1>, <h2>, social meta and image alt text. Two things that are
+# tolerated (or even sanctioned) in body prose are hard fails in a title:
+#
+#   1. The em dash. The approved phrase bank deliberately uses it as a rhythm
+#      device in body sentences, but a title has no legitimate need for one —
+#      there it is a strong AI tell. Any of these characters fails the title.
+TITLE_EM_DASH_CHARS = ["—", "&mdash;", "–"]  # em dash, HTML entity, en dash
+
+#   2. Explainer-cliché tails. These are too generic to ban in body prose
+#      ("...understand why it matters") but are a dead AI giveaway as a headline,
+#      typically tacked on after a colon or dash. Case-insensitive substring.
+TITLE_CLICHES = [
+    "why it matters",
+    "what it means for",
+    "what you need to know",
+    "everything you need to know",
+    "what the number hides",
+    "what the numbers hide",
+    "here's what",
+    "here's why",
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
