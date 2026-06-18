@@ -594,9 +594,28 @@ def _normalise_title(title: str) -> str:
     return re.sub(r"[^\w\s]", "", title.lower()).strip()
 
 
+def _resolve_within(base: Path, rel: str) -> Path:
+    """Join base/rel and confirm the result stays inside base.
+
+    brand_cfg.articles_index comes from per-brand config; a traversal value
+    (e.g. '../../etc/passwd') must not escape the site checkout and read or
+    write arbitrary files.
+    """
+    base_r = base.resolve()
+    target = (base_r / rel).resolve()
+    if target != base_r and base_r not in target.parents:
+        raise ValueError(f"articles_index '{rel}' escapes site root {base_r}")
+    return target
+
+
+def _safe_for_terminal(text: str) -> str:
+    """Strip control/escape characters from untrusted text before logging."""
+    return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+
+
 def _find_duplicate_title(title: str, site_path: Path, brand_cfg: BrandConfig) -> str | None:
     """Return the existing card title if it matches `title` (normalised), else None."""
-    articles_html_path = site_path / brand_cfg.articles_index
+    articles_html_path = _resolve_within(site_path, brand_cfg.articles_index)
     if not articles_html_path.exists():
         return None
     content = articles_html_path.read_text(encoding="utf-8")
@@ -613,7 +632,7 @@ def insert_card_into_articles_index(
     slug: str,
     brand_cfg: BrandConfig,
 ) -> None:
-    articles_html_path = site_path / brand_cfg.articles_index
+    articles_html_path = _resolve_within(site_path, brand_cfg.articles_index)
     content = articles_html_path.read_text(encoding="utf-8")
 
     if f'articles/{slug}.html' in content:
@@ -923,7 +942,7 @@ def main() -> int:
     existing = _find_duplicate_title(title, site_path, brand_cfg)
     if existing:
         print(
-            f"ERROR: Title already published: '{existing}' — duplicate publish blocked.",
+            f"ERROR: Title already published: '{_safe_for_terminal(existing)}' — duplicate publish blocked.",
             file=sys.stderr,
         )
         return 1
