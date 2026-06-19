@@ -9,9 +9,28 @@ import importlib.util
 import os
 import sys
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import yaml
+
+
+def _validate_site_subpath(field_name: str, value: str) -> str:
+    """Reject absolute paths or `..` traversal in a brand's site-relative path.
+
+    The site-structure fields (`articles_path`, `articles_index`, `assets_path`)
+    come from a brand's `brand.yaml` and are joined onto the site repo checkout
+    (e.g. `site_path / brand_cfg.articles_index`). A value like `../../etc/passwd`
+    would let a malicious or misconfigured brand config read or write outside the
+    site repo — and `publisher._find_duplicate_title` echoes index content back in
+    its duplicate-title error, which would exfiltrate the read file. Constrain
+    these to safe relative subpaths.
+    """
+    if value and (os.path.isabs(value) or ".." in PurePosixPath(value).parts):
+        raise ValueError(
+            f"Brand config field '{field_name}' must be a relative path within the "
+            f"site repo (no leading '/' or '..'): {value!r}"
+        )
+    return value
 
 # Where the engine's own code lives (this file's parent dir's parent). The base
 # phrase_banks.py module sits here; brand phrase_banks.py files import from it.
@@ -98,6 +117,12 @@ class BrandConfig:
     #   draft_dir: name of the dir draft_generator writes to       (default "review")
     #   approval:  "dirmove" (move file review/->approved/) | "status" (flag in queue)
     workflow: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        # Guard the site-relative path fields against absolute paths / `..`
+        # traversal before they are ever joined onto a site checkout.
+        for _field in ("articles_path", "articles_index", "assets_path"):
+            _validate_site_subpath(_field, getattr(self, _field))
 
     @property
     def staging_dir(self) -> Path:
