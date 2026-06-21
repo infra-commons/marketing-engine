@@ -111,6 +111,11 @@ class BrandConfig:
     newsletter: dict = field(default_factory=dict)
     buffer: dict = field(default_factory=dict)
     analytics: dict = field(default_factory=dict)
+    # Metrics dashboard config (consumed by pipeline.dashboard_generator). Empty dict
+    # => the brand has no dashboard wired up. Keys: title, output_dir, marketing_repo,
+    # staging_site_url, infra_workflows (list of [workflow_file, display_name]),
+    # token_expiry (map of label -> YYYY-MM-DD).
+    dashboard: dict = field(default_factory=dict)
     # Workflow config. Controls staging-dir layout + approval model so the engine
     # can serve both the dir-move workflow (review/ -> approved/, default) and the
     # status-flag workflow (single drafts/ dir + explicit `approve` command).
@@ -235,6 +240,7 @@ def load_brand(brand_slug: str) -> BrandConfig:
         newsletter=d.get("newsletter", {}),
         buffer=d.get("buffer", {}),
         analytics=d.get("analytics", {}),
+        dashboard=d.get("dashboard", {}),
         workflow=d.get("workflow", {}),
     )
 
