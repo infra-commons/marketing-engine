@@ -62,6 +62,44 @@ resolved relative to the engine itself.
 | `pipeline/signal_scrubber.py` | Removes AI tells and style violations |
 | `pipeline/queue_manager.py` | Manages the publish queue |
 | `pipeline/publisher.py` | Publishes approved articles to the entity site |
+| `pipeline/dashboard_generator.py` | Renders a brand's metrics dashboard HTML (see below) |
+
+## Metrics dashboard
+
+`pipeline/dashboard_generator.py` renders a single static `index.html` summarising a
+brand's marketing state (content pipeline, token expiry, MailerLite, Buffer, GA4,
+Search Console, cal.com, GitHub workflow health, SEO/GEO). It is brand-agnostic:
+theme colours, title, output path, repo slugs, token-expiry list and infra
+workflows all come from the brand's `brand.yaml`. Each data source degrades
+gracefully when its secret/config is absent.
+
+```bash
+export MARKETING_REPO_ROOT=/path/to/your/marketing
+PYTHONPATH=engine python3 -m pipeline.dashboard_generator --brand {slug} [--output path/index.html]
+```
+
+A brand opts in by adding a `dashboard:` block to its `brand.yaml` (brands without
+one render no dashboard). The block also reuses the existing `colors:`,
+`article_url_base:` and `analytics:` fields:
+
+```yaml
+dashboard:
+  title: "Acme Dashboard"
+  marketing_repo: acme-com/marketing            # used for GitHub source links
+  output_dir: workers/acme-dashboard/public     # relative to MARKETING_REPO_ROOT
+  staging_site_url: https://acme-staging.example.dev
+  infra_workflows:                              # [workflow_file, display_name]
+    - [auto-publish.yml, auto-publish]
+    - [deploy-dashboard.yml, deploy-dashboard]
+  token_expiry:                                 # label -> YYYY-MM-DD
+    BUFFER_ACCESS_TOKEN: "2026-08-30"
+```
+
+Article items link out: published/last-published → live `{article_url_base}/{slug}`;
+queued items → GitHub source under `brands/{slug}/`; drafts → the GitHub drafts dir.
+Secrets are read from env: `MAILERLITE_API_KEY`, `BUFFER_ACCESS_TOKEN`,
+`GOOGLE_OAUTH_JSON`, `CAL_API_KEY`, and a GitHub token
+(`DASHBOARD_GH_TOKEN` / `GITHUB_TOKEN`).
 
 ## Scripts
 
