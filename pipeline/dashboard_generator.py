@@ -790,7 +790,10 @@ def _link(url: str, text: str) -> str:
 
 
 def _trend_html(current, prior, invert: bool = False) -> str:
-    """Return a trend span comparing current to prior period. invert=True for metrics where lower is better (avg position)."""
+    """Return a trend span comparing current to prior period.
+
+    invert=True for metrics where lower is better (avg position).
+    """
     if current is None or prior is None or prior == 0:
         return ""
     pct = round((current - prior) / prior * 100)
@@ -1066,8 +1069,9 @@ def _section_ga4_html(ga4: dict) -> str:
         total_src = sum(s["sessions"] for s in sources) or 1
         src_items = "".join(
             f'<div class="src-row"><span class="src-name">{s["channel"]}</span>'
-            f'<span class="src-bar-wrap"><span class="src-bar" style="width:{min(100, round(s["sessions"]/total_src*100))}%"></span></span>'
-            f'<span class="src-count">{_fmt_num(s["sessions"])}</span></div>'
+            + '<span class="src-bar-wrap"><span class="src-bar" style="width:'
+            + f'{min(100, round(s["sessions"] / total_src * 100))}%">'
+            + f'</span></span><span class="src-count">{_fmt_num(s["sessions"])}</span></div>'
             for s in sources
         )
         sources_html = f'<div class="src-list">{src_items}</div>'
@@ -1180,18 +1184,25 @@ def _section_gsc_html(gsc: dict) -> str:
           <tbody>{zc_rows}</tbody>
         </table>"""
     else:
-        zero_click_html = "<p style='color:#999;font-size:0.8rem'>None yet (&ge;3 impressions, 0 clicks, pos &le;30)</p>"
+        zero_click_html = (
+            "<p style='color:#999;font-size:0.8rem'>"
+            "None yet (&ge;3 impressions, 0 clicks, pos &le;30)"
+            "</p>"
+        )
 
     error_note = f'<p class="api-error">{gsc["error"]}</p>' if gsc.get("error") else ""
+    clicks_note = f"<br>{clicks_trend}" if clicks_trend else ""
+    impressions_note = f"<br>{impressions_trend}" if impressions_trend else ""
+    pos_note = f"<br>{pos_trend}" if pos_trend else ""
 
     return f"""
   <div class="section">
     <div class="section-title">Search Visibility (Search Console · last 28d)</div>
     {error_note}
     <div class="card-grid" style="margin-bottom:20px">
-      {_card("Clicks (28d)", clicks, "Organic search clicks" + (f"<br>{clicks_trend}" if clicks_trend else ""))}
-      {_card("Impressions (28d)", impressions, "Search impressions" + (f"<br>{impressions_trend}" if impressions_trend else ""))}
-      {_card("Avg Position", avg_pos, "Weighted average ranking" + (f"<br>{pos_trend}" if pos_trend else ""), border_color=pos_color)}
+      {_card("Clicks (28d)", clicks, "Organic search clicks" + clicks_note)}
+      {_card("Impressions (28d)", impressions, "Search impressions" + impressions_note)}
+      {_card("Avg Position", avg_pos, "Weighted average ranking" + pos_note, border_color=pos_color)}
     </div>
     <div class="two-col">
       <div>
@@ -1223,12 +1234,20 @@ def _section_seo_html(seo: dict) -> str:
     sitemap_label = _link(seo.get("sitemap_url", ""), "sitemap.xml")
     sitemap_detail_full = f"{sitemap_label} &middot; {sitemap_detail}"
 
+    llms_detail = (
+        _link(seo.get("llms_txt_url", ""), seo.get("llms_txt_url", ""))
+        if seo["llms_txt_ok"]
+        else (seo.get("llms_txt_error") or "")
+    )
+    robots_detail = (
+        _link(seo.get("robots_txt_url", ""), seo.get("robots_txt_url", ""))
+        if seo["robots_txt_ok"]
+        else (seo.get("robots_txt_error") or "")
+    )
     rows = (
-        _check_row("sitemap.xml", sitemap_ok, sitemap_detail_full) +
-        _check_row("llms.txt", seo["llms_txt_ok"],
-                   _link(seo.get("llms_txt_url", ""), seo.get("llms_txt_url", "")) if seo["llms_txt_ok"] else (seo.get("llms_txt_error") or "")) +
-        _check_row("robots.txt", seo["robots_txt_ok"],
-                   _link(seo.get("robots_txt_url", ""), seo.get("robots_txt_url", "")) if seo["robots_txt_ok"] else (seo.get("robots_txt_error") or ""))
+        _check_row("sitemap.xml", sitemap_ok, sitemap_detail_full)
+        + _check_row("llms.txt", seo["llms_txt_ok"], llms_detail)
+        + _check_row("robots.txt", seo["robots_txt_ok"], robots_detail)
     )
 
     return f"""

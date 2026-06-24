@@ -8,12 +8,14 @@ select = ["E", "F", "W"]
 ignore = ["E402"]
 
 [tool.ruff.lint.per-file-ignores]
-# publisher.py and draft_generator.py embed long HTML/CSS template strings and
-# long prompt strings that cannot be wrapped without breaking their content.
+# These files embed long HTML/CSS/JS template strings and long prompt strings
+# that cannot be wrapped without breaking their content.
 # queue_manager.py has one long print statement with interpolated values.
 "pipeline/publisher.py" = ["E501"]
 "pipeline/draft_generator.py" = ["E501"]
 "pipeline/queue_manager.py" = ["E501"]
+"pipeline/dashboard_generator.py" = ["E501"]
+"tests/test_dashboard_generator.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
