@@ -1013,7 +1013,7 @@ def _section_social_html(buf: dict, quality_gate: dict | None, buffer_pending: l
         _card("LinkedIn (30d)", buf["linkedin_posts_30d"], li_detail) +
         _card("X / Twitter (30d)", buf["x_posts_30d"], x_detail) +
         _card("Pending Approval", pending_count,
-              f"LinkedIn drafts awaiting Kevin<br>{pending_detail}", border_color=pending_color) +
+              f"LinkedIn drafts awaiting operator<br>{pending_detail}", border_color=pending_color) +
         _card("Quality Gate", gate_value, gate_detail, border_color=gate_color)
     )
 
@@ -1395,7 +1395,7 @@ def _render_html(
         )
         approved_border = "#d97706"
 
-    # Needs Approval card — shows queued items waiting for Kevin
+    # Needs Approval card — shows queued items waiting for the operator
     if queued_count:
         needs_detail = _approve_list(next_queued, staging_site_url, marketing_repo, brand_slug, limit=3)
         needs_border = "#d97706"
@@ -1415,14 +1415,14 @@ def _render_html(
               f"ready for next cron run (Tue/Thu 8am NZT)<br>{approved_detail}",
               border_color=approved_border, card_id="pipeline-approved-card") +
         _card("Needs Approval", queued_count,
-              f"queued, awaiting Kevin sign-off<br>{needs_detail}",
+              f"queued, awaiting operator sign-off<br>{needs_detail}",
               border_color=needs_border, card_id="pipeline-needs-card") +
         _card("Last Published", "—" if not last_published else "✓",
               last_pub_detail) +
         _card("Drafts in Staging", draft_count, drafts_detail) +
         _card("Social Variants", social_total, social_detail) +
         _card("Buffer Pending", pending_count,
-              f"LinkedIn drafts awaiting Kevin approval<br>{pending_detail}",
+              f"LinkedIn drafts awaiting operator approval<br>{pending_detail}",
               border_color="var(--accent)" if pending_count > 5 else "var(--primary)")
     )
 
