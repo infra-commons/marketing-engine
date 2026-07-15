@@ -391,6 +391,25 @@ def build_article_html(
 
     canonical = f"{brand_cfg.article_url_base}/{slug}.html"
 
+    jsonld_obj = {
+        "@context": "https://schema.org",
+        "@type": "Article",
+        "headline": title,
+        "description": description,
+        "datePublished": pub_date,
+        "dateModified": pub_date,
+        "url": canonical,
+        "mainEntityOfPage": {"@type": "WebPage", "@id": canonical},
+        "author": {"@type": "Organization", "name": brand_cfg.display_name, "url": brand_cfg.site_url},
+        "publisher": {"@type": "Organization", "name": brand_cfg.display_name, "url": brand_cfg.site_url},
+        "inLanguage": "en-NZ",
+    }
+    if hero_img_path:
+        img_url = hero_img_path if hero_img_path.startswith("http") else f"{brand_cfg.site_url}{hero_img_path}"
+        jsonld_obj["image"] = img_url
+    # "<\/" keeps a literal "</script>" in any field from terminating the script block.
+    jsonld = json.dumps(jsonld_obj, ensure_ascii=False, indent=2).replace("</", "<\\/")
+
     # CTA block: a brand may override the default demo-button CTA with its own
     # self-contained article_cta.html fragment (e.g. a newsletter signup form).
     cta_section = load_article_cta(brand_cfg.brand_dir) or f"""<section class="art-cta">
@@ -412,6 +431,9 @@ def build_article_html(
   <title>{title_esc} | {brand_cfg.display_name}</title>
   <meta name="description" content="{desc_esc}" />
   <link rel="canonical" href="{canonical}" />
+  <script type="application/ld+json">
+{jsonld}
+  </script>
   <link rel="icon" href="/assets/favicon.png" sizes="32x32" />
   <link rel="apple-touch-icon" href="/assets/favicon.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
