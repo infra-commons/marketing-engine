@@ -148,6 +148,48 @@ def cmd_mark_published(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_add(args: argparse.Namespace) -> int:
+    """Enqueue a freshly generated draft in the held ('queued') state.
+
+    This is stage-1 of the two-stage weekly cadence: the Tuesday draft run
+    registers its new draft here as ``queued`` — which, under the status-flag
+    approval model, is NOT publishable until a human runs ``approve`` (the
+    sign-off gate). Idempotent: a draft_path already in the queue is left as-is.
+    """
+    cfg = load_brand(args.brand)
+    queue = load_queue(args.brand)
+    target = args.draft_path
+
+    existing = next((q for q in queue if q.get("draft_path") == target), None)
+    if existing is not None:
+        print(f"Already queued (status '{existing.get('status')}'): {target}")
+        return 0
+
+    entry = {
+        "draft_path": target,
+        "slug": args.slug or "",
+        "description": args.description or "",
+        "status": "queued",
+        "added_at": str(date.today()),
+    }
+    # Record a failed compliance gate so the human approver sees it before sign-off
+    # (the draft is still enqueued — the human gate is the real block, not the CI gate).
+    if getattr(args, "gate_failed", False):
+        entry["gate_passed"] = False
+
+    queue.append(entry)
+    save_queue(args.brand, queue)
+
+    gate_note = "  ⚠ compliance gate FAILED — review carefully" if entry.get("gate_passed") is False else ""
+    print(f"Queued (held, needs approval): {entry['slug'] or target}{gate_note}")
+    if cfg.approval_model == "status":
+        print(
+            f"  → Approve to publish: python3 -m pipeline.queue_manager --brand {args.brand} "
+            f"approve {entry['slug'] or '<slug>'}"
+        )
+    return 0
+
+
 def cmd_approve(args: argparse.Namespace) -> int:
     """Approve a queued article (status-flag workflow): queued -> approved."""
     queue = load_queue(args.brand)
@@ -266,6 +308,19 @@ def main() -> int:
         help="Output as GitHub Actions env var lines",
     )
     p_next.set_defaults(func=cmd_next)
+
+    # add (enqueue a freshly generated draft in the held 'queued' state)
+    p_add = sub.add_parser("add", help="Enqueue a draft in the held ('queued') state")
+    p_add.add_argument("draft_path", help="Draft path relative to brand dir (e.g. staging/drafts/draft-011-v1.md)")
+    p_add.add_argument("--slug", default="", help="URL slug for the article")
+    p_add.add_argument("--description", default="", help="Meta description (~155 chars)")
+    p_add.add_argument(
+        "--gate-failed",
+        dest="gate_failed",
+        action="store_true",
+        help="Mark the draft as having failed the compliance gate (flags it for the human approver)",
+    )
+    p_add.set_defaults(func=cmd_add)
 
     # approve (status-flag workflow)
     p_approve = sub.add_parser("approve", help="Approve a queued article for the next publish run")

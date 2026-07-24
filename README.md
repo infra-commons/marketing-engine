@@ -110,6 +110,56 @@ Secrets are read from env: `MAILERLITE_API_KEY`, `BUFFER_ACCESS_TOKEN`,
 | `run-batch.sh` | Process a batch of queue items |
 | `queue-runner.sh` | Queue management helper |
 
+## Two-stage weekly cadence (Tuesday draft → sign-off → Thursday publish)
+
+To stop unreviewed content publishing automatically, the article cadence is split into
+two scheduled stages with an explicit human sign-off gate between them:
+
+```
+ Tuesday                          human                      Thursday
+ ───────                          ─────                      ────────
+ draft_pipeline  ── enqueues ──▶  queue_manager approve ──▶  auto-publish
+ (topic → brief                   (the sign-off gate)        (publishes ONLY
+  → draft → queue                                             'approved' items)
+  as 'queued'/held)
+```
+
+**Stage 1 — Tuesday (`pipeline.draft_pipeline`).** One unattended command:
+
+```bash
+python3 -m pipeline.draft_pipeline --brand <slug>
+```
+
+1. **Topic selection** (`pipeline.topic_selector`) — picks a timely topic from the brand's
+   trending feeds and synthesizes a full article brief. Explainable + overridable:
+   feeds come from `brand.yaml` (`topic_feeds:`, defaulting to NZ-SME business-news
+   Google-News RSS); every run logs the candidates + rationale to
+   `staging/topics/topic-<date>.json`; an operator can override with `--topic "…"`,
+   swap feeds with `--feeds url,url`, or reuse an existing brief with `--brief brief-011`.
+2. **Draft generation** (`pipeline.draft_generator`) — writes a gated draft to `staging/drafts/`.
+3. **Enqueue held** (`queue_manager add`) — registers the draft as `status: "queued"`.
+   A `queued` item is **not publishable** (see the gate below).
+
+**The sign-off gate.** Publishing requires the **status** approval model
+(`workflow.approval: status` in `brand.yaml`). Under it, `queue_manager next` — the
+selector the publish workflow calls — returns an item **only** when its status is
+`approved`. A human advances an item across the gate with:
+
+```bash
+python3 -m pipeline.queue_manager --brand <slug> approve <slug>
+```
+
+You can assert the gate holds — a `queued` draft is withheld, an `approved` one is
+released — with `pytest tests/test_two_stage_gate.py`.
+
+**Stage 2 — Thursday (`auto-publish.yml` in the consumer marketing repo).** The scheduled
+publish workflow runs `queue_manager next` (which yields only approved items) and publishes
+it via `pipeline.publisher`. A draft never approved is simply not published.
+
+**Scheduling** lives in the consumer marketing repo's GitHub Actions: `generate-draft.yml`
+targets Tuesday (`cron: '0 20 * * 1'`), `auto-publish.yml` targets Thursday
+(`cron: '0 20 * * 3'`) — Mon/Wed 20:00 UTC = Tue/Thu 08:00 NZST.
+
 ## Requirements
 
 - Python 3.12
