@@ -20,6 +20,7 @@ Usage:
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -107,11 +108,18 @@ def main() -> int:
     p.add_argument("--dry-run", action="store_true", help="Select/synthesize only; do not draft or enqueue")
     args = p.parse_args()
 
-    feeds_override = [u.strip() for u in args.feeds.split(",")] if args.feeds else None
+    # Env fallbacks let a CI workflow pass untrusted dispatch inputs (a free-text
+    # topic, a brief id) via the environment instead of interpolating them into a
+    # shell command line — avoiding command injection. An empty env value is ignored.
+    topic = args.topic or (os.environ.get("DRAFT_TOPIC") or None)
+    brief = args.brief or (os.environ.get("DRAFT_BRIEF") or None)
+    feeds_env = os.environ.get("DRAFT_FEEDS")
+    feeds_src = args.feeds or (feeds_env or None)
+    feeds_override = [u.strip() for u in feeds_src.split(",")] if feeds_src else None
     return run(
         args.brand,
-        override_topic=args.topic,
-        existing_brief=args.brief,
+        override_topic=topic,
+        existing_brief=brief,
         feeds_override=feeds_override,
         dry_run=args.dry_run,
     )
