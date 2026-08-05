@@ -3,8 +3,9 @@ Unit tests for the Article JSON-LD block emitted by build_article_html.
 
 Asserts every generated article page carries a valid `@type: Article`
 schema.org object in a <script type="application/ld+json"> tag. Runs in CI
-without external dependencies (reads brand config from the consuming repo,
-read-only).
+without external dependencies — brand config comes from the synthetic fixture
+at tests/fixtures/brands/testbrand/, so the suite is standalone and does not
+read any consuming repo.
 """
 
 import json
@@ -19,13 +20,22 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from pipeline.brand_loader import load_brand  # noqa: E402
 from pipeline.publisher import build_article_html  # noqa: E402
 
-CONSUMER_ROOT = Path(__file__).parent.parent.parent
+# Brand config comes from the in-repo synthetic fixture, NOT from a consuming
+# repo. This previously pointed at `Path(__file__).parent.parent.parent` — the
+# engine's grandparent — which only resolves when the engine is checked out as a
+# submodule at `<consumer>/engine/`. Standalone, there is no `brands/` above this
+# repo, so `load_brand` raised FileNotFoundError and these tests could not run in
+# the engine's own CI, despite the module docstring claiming otherwise.
+#
+# Using a fixture brand also removes a second problem: asserting against a live
+# brand's config made an engine unit test movable by a marketing copy change.
+FIXTURE_ROOT = Path(__file__).parent / "fixtures"
 
 
 @pytest.fixture()
 def brand_cfg(monkeypatch):
-    monkeypatch.setenv("MARKETING_REPO_ROOT", str(CONSUMER_ROOT))
-    return load_brand("rolliq")
+    monkeypatch.setenv("MARKETING_REPO_ROOT", str(FIXTURE_ROOT))
+    return load_brand("testbrand")
 
 
 def _render(brand_cfg, **overrides):

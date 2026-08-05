@@ -1,0 +1,92 @@
+# Synthetic brand config for the engine's OWN test suite.
+#
+# Why this exists: the engine is normally consumed as a git submodule at
+# `<consumer>/engine/`, and `brand_loader.consumer_root()` resolves brand config
+# from the consuming repo. Tests that needed a BrandConfig therefore reached into
+# the consumer's real `brands/<slug>/brand.yaml` — which meant they could only run
+# inside a consumer, and could not run in this repository's own CI at all.
+#
+# Two problems with that, both fixed by this file:
+#   1. The engine could not test itself. Its CI had nothing to load.
+#   2. A unit test asserting on live business config is not deterministic — a brand
+#      changing its CTA copy or palette would move an engine test.
+#
+# Every value here is invented. It must stay that way: this repository is PUBLIC,
+# so a real brand's URLs, CTAs, analytics IDs or social handles must never be
+# copied in. The values need only be well-formed and internally consistent; no
+# test asserts a literal from this file, they assert against the loaded
+# BrandConfig's own attributes.
+
+brand: testbrand
+display_name: Test Brand
+tagline: "Test Brand &#8211; fixture copy for the engine test suite."
+
+# Site repository
+site_repo: example-org/example-site
+site_local_name: example-site
+site_url: https://example.test
+
+# Secrets (env var names only — no secret material)
+gh_token_env: EXAMPLE_GH_TOKEN
+unsplash_key_env: EXAMPLE_UNSPLASH_KEY
+
+# Site structure
+articles_path: articles
+articles_index: articles.html
+assets_path: assets
+articles_grid_marker: '<div class="art-inner">'
+
+# URLs
+article_url_base: https://example.test/articles
+unsplash_utm_source: testbrand
+
+# Article page CTA section
+cta_booking_url: https://example.test/book
+cta_contact_url: mailto:hello@example.test
+cta_headline: Example call to action headline
+cta_body: Example call to action body copy.
+cta_btn_primary: Primary Action
+cta_btn_secondary: Secondary Action
+
+# Draft generator context
+platform_description: "example.test — a fictional business used only as test fixture data"
+brand_section_label: test brand angle
+
+# Brand colours
+colors:
+  primary: "#336699"
+  primary_dark: "#224466"
+  accent: "#66AACC"
+  heading: "#222222"
+  text: "#1a1a1a"
+  gray_bg: "#FAFAFA"
+
+# Article hero gradients
+hero_gradients:
+  news-reaction: "linear-gradient(135deg, #66AACC 0%, #336699 100%)"
+  explainer: "linear-gradient(135deg, #88BBDD 0%, #224466 100%)"
+  how-to: "linear-gradient(135deg, #AACCEE 0%, #336699 100%)"
+  sector-analysis: "linear-gradient(135deg, #CCDDEE 0%, #66AACC 100%)"
+  default: "linear-gradient(135deg, #66AACC 0%, #336699 100%)"
+
+# Article type display labels
+article_type_labels:
+  news-reaction: Example News
+  explainer: Explainer
+  how-to: How-To Guide
+  sector-analysis: Sector Analysis
+
+# Social media
+social:
+  linkedin_hashtags_base: "#ExampleTag #Fixture"
+  linkedin_hashtags_news: "#ExampleNews"
+  linkedin_hashtags_how_to: "#ExampleHowTo"
+  linkedin_hashtags_sector: "#ExampleSector"
+  x_hashtags: "#ExampleTag"
+
+# Publish workflow options
+workflow:
+  approval: status
+  draft_dir: drafts
+  update_sitemap: true
+  sitemap_path: sitemap.xml
