@@ -1,0 +1,51 @@
+name: CI
+
+# The engine's pytest suite, via the fleet's canonical Python test reusable.
+#
+# Until this file existed, this repository had 8 test files and exactly one
+# workflow (secret-scan.yml) — so the suite ran nowhere. devops-manifest.yaml
+# already declared the intended posture (`testing: {suite: pytest, runner:
+# ci.yml, coverage: report}`); this is the runner that declaration names.
+#
+# coverage: report, not floor:N — deliberately, and consistent with the manifest
+# entry. The engine currently measures ~29%, with four modules at 0%
+# (draft_generator, draft_pipeline, fact_checker, signal_scrubber). A floor set
+# at today's number would lock that in as acceptable; report-only surfaces the
+# 0% rows on every run, which is the signal actually worth having here. Revisit
+# once those modules have tests — and see the reusable's own header for why a
+# floor is a regression guard rather than a quality measure.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+
+# Cancel superseded runs on the same PR branch, but never on main: a push-to-main
+# run is the post-merge record for that commit, and cancelling it is how a
+# breakage gets attributed to the next author's commit instead of the one that
+# caused it.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions: {}
+
+jobs:
+  test:
+    # Draft PRs still run this: the suite is ~2s and the signal is worth more
+    # than the runner minutes. `ready_for_review` is in the trigger list so a
+    # PR leaving draft re-reports rather than showing a stale result.
+    uses: infra-commons/devops/.github/workflows/python-tests-reusable.yml@d1a9739301b768ee399b2dd69f0b01728b9ea442
+    with:
+      test_path: tests
+      source_dir: pipeline
+      coverage: report
+      # requirements.txt carries only the runtime deps (anthropic, pyyaml), so
+      # the test tooling is named here rather than added to it — the engine is
+      # vendored into consumer repos, and they should not inherit pytest.
+      install: -r requirements.txt
+      pytest_version: "8.3.4"
+      pytest_cov_version: "6.0.0"
+      cache_dependency_path: requirements.txt
