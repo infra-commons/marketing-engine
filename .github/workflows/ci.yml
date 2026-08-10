@@ -48,7 +48,7 @@ jobs:
     # one. Measured on this PR's first push.
     permissions:
       contents: read
-    uses: infra-commons/devops/.github/workflows/python-tests-reusable.yml@d1a9739301b768ee399b2dd69f0b01728b9ea442
+    uses: infra-commons/devops/.github/workflows/python-tests-reusable.yml@ff9548f3843d47f96a911c0165c1663f82d5c6b7
     with:
       test_path: tests
       source_dir: pipeline
