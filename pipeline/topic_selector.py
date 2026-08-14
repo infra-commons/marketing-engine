@@ -50,6 +50,13 @@ DEFAULT_FEEDS = [
 
 VALID_ARTICLE_TYPES = ("news-reaction", "explainer", "how-to", "sector-analysis")
 
+# Output token cap for the brief-synthesis call. RETRY_MAX_TOKENS is used only for the
+# one retry after a confirmed truncation (stop_reason == "max_tokens"), so the common
+# case's cost is unchanged and the bump is evidence-gated rather than a blind raise of
+# the ceiling — see infra-commons/marketing-engine#22.
+MAX_TOKENS = 2000
+RETRY_MAX_TOKENS = 4000
+
 # Words too generic to signal topic overlap on their own.
 _STOPWORDS = {
     "the", "a", "an", "and", "or", "for", "to", "of", "in", "on", "at", "by", "with",
@@ -278,15 +285,26 @@ The JSON MUST have exactly these keys:
 Output the JSON now."""
 
 
-def _call_claude(prompt: str, api_key: str) -> str:
+class TruncatedResponseError(RuntimeError):
+    """The model's response was cut off by the max_tokens cap (stop_reason == "max_tokens"),
+    not malformed generation. Callers should treat this as a distinct, retriable condition
+    from a JSON parse failure — see infra-commons/marketing-engine#22."""
+
+
+def _call_claude(prompt: str, api_key: str, max_tokens: int = MAX_TOKENS) -> str:
     import anthropic
 
     client = anthropic.Anthropic(api_key=api_key)
     resp = client.messages.create(
         model=MODEL,
-        max_tokens=2000,
+        max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
     )
+    if resp.stop_reason == "max_tokens":
+        raise TruncatedResponseError(
+            f"model response was truncated at the {max_tokens}-token cap "
+            f"(stop_reason=max_tokens) — the JSON brief is incomplete, not malformed."
+        )
     return resp.content[0].text
 
 
@@ -313,7 +331,14 @@ def synthesize_brief(
 ) -> dict:
     """Call Claude to select a candidate (or use the override) and return a brief dict."""
     prompt = _synthesis_prompt(cfg, candidates, override_topic)
-    raw = _call_claude(prompt, api_key)
+    try:
+        raw = _call_claude(prompt, api_key)
+    except TruncatedResponseError as e:
+        print(
+            f"⚠  {e} Retrying once with max_tokens={RETRY_MAX_TOKENS}…",
+            file=sys.stderr,
+        )
+        raw = _call_claude(prompt, api_key, max_tokens=RETRY_MAX_TOKENS)
     brief = _extract_json(raw)
 
     # Normalise / harden the model output.
@@ -369,7 +394,19 @@ def select_and_write(
         if verbose:
             print(f"    {len(candidates)} candidate topic(s) after dedupe.")
 
-    brief = synthesize_brief(cfg, candidates, override_topic, api_key)
+    try:
+        brief = synthesize_brief(cfg, candidates, override_topic, api_key)
+    except TruncatedResponseError as e:
+        print(f"❌  Brief synthesis failed: {e}", file=sys.stderr)
+        sys.exit(3)
+    except json.JSONDecodeError as e:
+        print(
+            f"❌  Brief synthesis failed: model response was not valid JSON ({e}). "
+            "This is a malformed-generation failure, not truncation — the remedy is a "
+            "prompt/schema fix, not a higher token cap.",
+            file=sys.stderr,
+        )
+        sys.exit(3)
 
     if verbose:
         print(f"\n📝  Brief {brief['brief_id']} — {brief.get('article_type')}")
