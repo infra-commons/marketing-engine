@@ -132,3 +132,108 @@ class TestSynthesizeBrief:
         assert brief["dates_verified"] is False            # forced false for auto-gen
         assert brief["slug"]                               # slug derived
         assert brief["description"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Truncated-response handling (infra-commons/marketing-engine#22)
+#
+# "Unterminated string" is the signature of a response cut off by the max_tokens
+# cap, not of malformed generation. These cover: detecting that explicitly via
+# stop_reason (not by inferring it from the parse error), retrying once with a
+# higher cap, and failing loudly — never silently — when that's exhausted.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class _FakeContentBlock:
+    def __init__(self, text):
+        self.text = text
+
+
+class _FakeResponse:
+    def __init__(self, text, stop_reason):
+        self.content = [_FakeContentBlock(text)]
+        self.stop_reason = stop_reason
+
+
+def _fake_anthropic(monkeypatch, text, stop_reason, captured=None):
+    """Patch anthropic.Anthropic with a client whose messages.create() returns a
+    canned (text, stop_reason) response. captured, if given, collects each call's
+    kwargs so tests can assert on the max_tokens actually sent."""
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            if captured is not None:
+                captured.append(kwargs)
+            return _FakeResponse(text, stop_reason)
+
+    class FakeClient:
+        def __init__(self, api_key):
+            self.messages = FakeMessages()
+
+    monkeypatch.setattr("anthropic.Anthropic", FakeClient)
+
+
+class TestCallClaudeTruncation:
+    def test_max_tokens_stop_reason_raises_truncated_error(self, monkeypatch):
+        _fake_anthropic(monkeypatch, '{"topic_statement": "cut off mid', "max_tokens")
+        with pytest.raises(topic_selector.TruncatedResponseError):
+            topic_selector._call_claude("prompt", "key")
+
+    def test_end_turn_stop_reason_returns_text(self, monkeypatch):
+        _fake_anthropic(monkeypatch, '{"ok": true}', "end_turn")
+        assert topic_selector._call_claude("prompt", "key") == '{"ok": true}'
+
+    def test_retry_max_tokens_is_passed_through(self, monkeypatch):
+        captured = []
+        _fake_anthropic(monkeypatch, '{"ok": true}', "end_turn", captured=captured)
+        topic_selector._call_claude("prompt", "key", max_tokens=topic_selector.RETRY_MAX_TOKENS)
+        assert captured[0]["max_tokens"] == topic_selector.RETRY_MAX_TOKENS
+
+
+class TestSynthesizeBriefTruncationRetry:
+    def test_retries_once_after_truncation_then_succeeds(self, brand, monkeypatch):
+        # Regression test for #22 — fails against pre-fix code (no retry, no
+        # TruncatedResponseError).
+        cfg = load_brand(brand)
+        calls = []
+
+        def fake_call_claude(prompt, key, max_tokens=topic_selector.MAX_TOKENS):
+            calls.append(max_tokens)
+            if len(calls) == 1:
+                raise topic_selector.TruncatedResponseError(
+                    "model response was truncated at the 2000-token cap (stop_reason=max_tokens)"
+                )
+            return '{"topic_statement": "X", "article_type": "explainer", "angle": "a"}'
+
+        monkeypatch.setattr(topic_selector, "_call_claude", fake_call_claude)
+        brief = topic_selector.synthesize_brief(cfg, [], "some topic", api_key="k")
+        assert brief["topic_statement"] == "X"
+        assert calls == [topic_selector.MAX_TOKENS, topic_selector.RETRY_MAX_TOKENS]
+
+    def test_truncated_on_retry_too_propagates_not_swallowed(self, brand, monkeypatch):
+        cfg = load_brand(brand)
+
+        def fake_call_claude(prompt, key, max_tokens=topic_selector.MAX_TOKENS):
+            raise topic_selector.TruncatedResponseError(
+                "model response was truncated (stop_reason=max_tokens)"
+            )
+
+        monkeypatch.setattr(topic_selector, "_call_claude", fake_call_claude)
+        with pytest.raises(topic_selector.TruncatedResponseError):
+            topic_selector.synthesize_brief(cfg, [], "some topic", api_key="k")
+
+
+class TestSelectAndWriteTruncationIsLoud:
+    def test_exhausted_retry_fails_loudly_not_silently(self, brand, monkeypatch, capsys):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+
+        def fake_call_claude(prompt, key, max_tokens=topic_selector.MAX_TOKENS):
+            raise topic_selector.TruncatedResponseError(
+                "model response was truncated (stop_reason=max_tokens)"
+            )
+
+        monkeypatch.setattr(topic_selector, "_call_claude", fake_call_claude)
+        with pytest.raises(SystemExit) as exc_info:
+            topic_selector.select_and_write(brand, override_topic="some topic", verbose=False)
+        assert exc_info.value.code == 3
+        assert "truncat" in capsys.readouterr().err.lower()
