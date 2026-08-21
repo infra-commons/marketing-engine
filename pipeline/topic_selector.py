@@ -373,9 +373,11 @@ def select_and_write(
     Returns the brief dict (with an added 'brief_path' key when written).
     """
     cfg = load_brand(brand_slug)
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    # CB_ANTHROPIC_API_KEY takes precedence when set — it bills the subscription; the
+    # plain name bills the Anthropic API directly. Same precedence as fact_checker.py.
+    api_key = os.environ.get("CB_ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        print("❌  ANTHROPIC_API_KEY not set — cannot synthesize a brief.", file=sys.stderr)
+        print("❌  CB_ANTHROPIC_API_KEY (or ANTHROPIC_API_KEY) not set — cannot synthesize a brief.", file=sys.stderr)
         sys.exit(1)
 
     candidates: list[dict] = []

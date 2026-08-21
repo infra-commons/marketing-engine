@@ -313,10 +313,12 @@ def generate(
         print(f"    Close:   {phrases['close'][:60]}...")
 
     # ── Check API key ────────────────────────────────────────────────────────
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    # CB_ANTHROPIC_API_KEY takes precedence when set — it bills the subscription; the
+    # plain name bills the Anthropic API directly. Same precedence as fact_checker.py.
+    api_key = os.environ.get("CB_ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         print(
-            "\n❌  ANTHROPIC_API_KEY not set.\n"
+            "\n❌  CB_ANTHROPIC_API_KEY (or ANTHROPIC_API_KEY) not set.\n"
             "    Export it before running:\n"
             "    export ANTHROPIC_API_KEY=sk-ant-...\n",
             file=sys.stderr,
