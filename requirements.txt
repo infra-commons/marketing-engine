@@ -1,2 +1,2 @@
-anthropic>=0.106.0
+anthropic>=1.0.0
 pyyaml>=6.0.3
