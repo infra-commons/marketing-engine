@@ -38,7 +38,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pipeline.brand_loader import DEFAULT_BRAND, BrandConfig, load_brand
 
-MODEL = os.environ.get("MODEL") or "claude-opus-4-8"
+# MID tier (infra-commons/meta model-registry.yaml `tier_equivalence:`). Ranking
+# headlines against a brand's topic rules is routine selection, not drafting; no
+# capability need here justifies the roughly 2x cost of a flagship pin.
+MODEL = os.environ.get("MODEL") or "claude-sonnet-5"
 
 # NZ-SME business-news default feeds, used when a brand sets no `topic_feeds:`.
 # Google News RSS search needs no API key and returns reverse-chronological

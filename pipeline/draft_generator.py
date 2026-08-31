@@ -8,7 +8,7 @@ Flow:
   2. Load brief JSON
   3. Select from phrase banks (opener, transitions, CTA, close)
   4. Build prompt with: brief, article spine, phrase selections, structural rules
-  5. Call Claude API (claude-opus-4-8) with prompt caching on the system prompt
+  5. Call Claude API (claude-opus-5) with prompt caching on the system prompt
   6. Run compliance gate on output
   7. If gate fails, retry once with targeted fix instructions
   8. Write to brands/{brand}/staging/review/draft-XXX-v1.md (or next version)
@@ -42,8 +42,12 @@ from pipeline.compliance_gate import GateResult, check as gate_check
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Default model is opus; a consumer can override per-run via the MODEL env var
-# (e.g. a brand that runs on a cheaper tier sets MODEL=claude-sonnet-4-6).
-MODEL = os.environ.get("MODEL") or "claude-opus-4-8"
+# (e.g. a brand that runs on a cheaper tier sets MODEL=claude-sonnet-5).
+#
+# FLAGSHIP tier, deliberately, against the MID default in
+# infra-commons/meta model-registry.yaml `tier_equivalence:`. Draft prose IS the
+# product here, and MAX_TOKENS below is already sized for opus's denser output.
+MODEL = os.environ.get("MODEL") or "claude-opus-5"
 MAX_TOKENS = 4000  # Opus produces denser output; extra headroom for retry
 
 ALL_BANNED = BANNED_PHRASES + LEVERAGE_SYNONYMS + DELVE_SYNONYMS + UNLOCK_SYNONYMS

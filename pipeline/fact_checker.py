@@ -39,7 +39,7 @@ import anthropic
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from pipeline.brand_loader import DEFAULT_BRAND, load_brand
 
-MODEL = "claude-sonnet-4-6"
+MODEL = "claude-sonnet-5"
 MAX_TOKENS = 1024
 
 
