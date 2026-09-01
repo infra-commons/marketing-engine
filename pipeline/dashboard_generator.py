@@ -22,6 +22,7 @@ repo root), falling back to workers/{brand}-dashboard/public/index.html.
 """
 
 import argparse
+import html
 import json
 import os
 import urllib.error
@@ -32,7 +33,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from pipeline.brand_loader import consumer_root, load_brand
-from pipeline.queue_policy import recorded_blockers
+from pipeline.publisher import make_description, parse_draft_text
+from pipeline.queue_policy import describe, recorded_blockers
 
 MAILERLITE_API_BASE = "https://connect.mailerlite.com/api"
 BUFFER_GRAPHQL_URL = "https://api.buffer.com/graphql"
@@ -86,6 +88,41 @@ def _draft_count(drafts_dir: Path) -> int:
     if not drafts_dir.exists():
         return 0
     return len(list(drafts_dir.glob("draft-*-v*.md")))
+
+
+def _draft_summary(brand_dir: Path, item: dict) -> dict:
+    """Title, word count and an opening excerpt for a queued draft.
+
+    The approve row asks someone to sign off on an article, so it has to put enough of the
+    article in front of them to sign off on. Reads the draft rather than relying on what
+    the queue happens to record: a `word_count` key is preferred when present, but nothing
+    writes one today, so every entry already in a queue would otherwise render blank.
+
+    Never raises. A draft that has been moved or deleted renders a thinner row -- a
+    dashboard that fails to render tells the approver strictly less than one that renders
+    with a gap in it, and `draft_path` legitimately goes stale under the dir-move workflow.
+    """
+    summary = {
+        "title": "",
+        "word_count": item.get("word_count"),
+        "excerpt": str(item.get("description") or ""),
+    }
+
+    draft_path = item.get("draft_path") or ""
+    if not draft_path:
+        return summary
+    try:
+        text = (brand_dir / draft_path).read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return summary
+
+    title, body = parse_draft_text(text)
+    summary["title"] = title
+    if summary["word_count"] is None:
+        summary["word_count"] = len(body.split())
+    if not summary["excerpt"]:
+        summary["excerpt"] = make_description(body, None)
+    return summary
 
 
 def _parse_token_expiry(raw: dict) -> dict:
@@ -844,11 +881,48 @@ def _approve_list(items: list, staging_site_url: str, marketing_repo: str, brand
             if (marketing_repo and draft_path) else ""
         )
         slug_html = _link(gh_url, slug)
+
+        # What the approver is being asked to approve. Without it the row is a slug and two
+        # buttons, and the recorded verdict -- which `queue_manager approve` REFUSES on --
+        # is invisible here, so the button offers a sign-off the CLI would decline and
+        # gives no reason for it.
+        #
+        # The blockers are rendered rather than used to disable the button. /api/approve
+        # belongs to the consuming repo, a force-approval is a legitimate operator action,
+        # and a control disabled by a module that does not own it teaches the operator to
+        # route around the warning rather than to read it.
+        facts = []
+        if item.get("title"):
+            facts.append(html.escape(str(item["title"])))
+        word_count = item.get("word_count")
+        if word_count:
+            facts.append(f"{word_count:,} words")
+        verdict = describe(item)
+        if verdict == "-":
+            # No recorded verdict at all: the entry predates gate recording, or was added
+            # by something that never ran the gate. Distinct from a clean pass, and the
+            # approver is the one person who can tell the difference.
+            facts.append('<span class="approve-verdict">UNGATED</span>')
+        elif verdict != "ok":
+            facts.append(f'<span class="approve-verdict">{verdict}</span>')
+
+        detail = f'<span class="approve-facts">{" · ".join(facts)}</span>' if facts else ""
+        excerpt = html.escape(str(item.get("excerpt") or ""))
+        if excerpt:
+            detail += f'<span class="approve-excerpt">{excerpt}</span>'
+        for reason in recorded_blockers(item):
+            detail += f'<span class="approve-blocker">⚠ {html.escape(reason)}</span>'
+
         rows += (
             f'<li class="approve-item">'
+            f'<span class="approve-body">'
             f'<span class="approve-slug">{slug_html}</span>'
+            f'{detail}'
+            f'</span>'
+            f'<span class="approve-actions">'
             f'<button class="stage-btn" data-slug="{slug}" data-preview-url="{preview_url}">Preview</button>'
             f'<button class="approve-btn" data-slug="{slug}">Approve</button>'
+            f'</span>'
             f'</li>'
         )
     return f'<ul class="slug-list approve-list" id="pipeline-approve-list">{rows}</ul>' if rows else "<p>—</p>"
@@ -1595,10 +1669,18 @@ def _render_html(
     .src-count {{ min-width: 40px; text-align: right; color: #777; font-size: 0.72rem; }}
 
     /* Approve buttons */
-    .approve-list .approve-item {{ display: flex; align-items: center; justify-content: space-between; padding: 2px 0; }}
+    .approve-list .approve-item {{ display: flex; align-items: flex-start; justify-content: space-between;
+                                  padding: 5px 0; border-bottom: 1px solid #f0f0f0; }}
+    .approve-list .approve-item:last-child {{ border-bottom: none; }}
+    .approve-body {{ flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }}
+    .approve-actions {{ flex-shrink: 0; white-space: nowrap; padding-top: 1px; }}
+    .approve-facts {{ font-size: 0.66rem; color: #777; padding-left: 16px; }}
+    .approve-excerpt {{ font-size: 0.68rem; color: #555; line-height: 1.35; padding-left: 16px; }}
+    .approve-blocker {{ font-size: 0.66rem; color: #b45309; line-height: 1.35; padding-left: 16px; }}
+    .approve-verdict {{ font-weight: 700; color: #b45309; letter-spacing: 0.03em; }}
     .approve-slug {{ font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace;
                     font-size: 0.73rem; color: #555; overflow: hidden; text-overflow: ellipsis;
-                    white-space: nowrap; flex: 1; }}
+                    white-space: nowrap; }}
     .approve-slug a {{ color: #555; text-decoration: none; }}
     .approve-slug a:hover {{ color: var(--primary); text-decoration: underline; }}
     .approve-slug::before {{ content: "\2192  "; color: var(--primary); }}
@@ -1852,7 +1934,9 @@ def generate_dashboard(brand_slug: str, output_path: Path | None = None) -> Path
 
     last_published = queue["published"][-1] if queue["published"] else None
     next_approved = queue["approved"][:3]
-    next_queued = queue["queued"][:3]
+    # Enriched here rather than inside the renderer, so the render stays a pure function of
+    # its arguments and each draft is read once, in the one place that knows the brand dir.
+    next_queued = [{**q, **_draft_summary(brand.brand_dir, q)} for q in queue["queued"][:3]]
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     # Brand dashboard config

@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pipeline.dashboard_generator import (  # noqa: E402
     _approve_list,
+    _draft_summary,
     _parse_token_expiry,
     _render_html,
     _theme_vars,
@@ -138,3 +139,112 @@ class TestTokenExpiry:
         assert by_name == {"soon": "danger", "mid": "warning", "far": "ok"}
         # Sorted soonest-first.
         assert [t["name"] for t in tokens] == ["soon", "mid", "far"]
+
+
+class TestApproveRowContent:
+    """The approve row has to carry enough of the article to approve it on.
+
+    A slug and two buttons give the approver nothing to base a decision on, and leave the
+    recorded verdict -- the one `queue_manager approve` refuses on -- invisible.
+    """
+
+    APPROVE_KWARGS = dict(
+        staging_site_url="https://staging.example",
+        marketing_repo="acme-com/marketing",
+        brand_slug="acme",
+    )
+
+    def _row(self, **overrides):
+        item = {
+            "slug": "foo",
+            "draft_path": "staging/drafts/draft-001-v1.md",
+            "title": "What The Wage Change Actually Costs",
+            "word_count": 1240,
+            "excerpt": "The headline rate is the smallest part of the bill.",
+            "gate_passed": True,
+            "dates_verified": True,
+        }
+        item.update(overrides)
+        return _approve_list([item], **self.APPROVE_KWARGS)
+
+    def test_row_shows_title_word_count_and_excerpt(self):
+        html = self._row()
+        assert "What The Wage Change Actually Costs" in html
+        assert "1,240 words" in html
+        assert "The headline rate is the smallest part of the bill." in html
+
+    def test_clean_entry_shows_no_verdict_warning(self):
+        html = self._row()
+        assert "approve-verdict" not in html
+        assert "approve-blocker" not in html
+
+    def test_failed_gate_is_named_with_its_reason(self):
+        html = self._row(gate_passed=False, gate_flags=["banned phrase"])
+        assert "GATE" in html
+        assert "failed the compliance gate" in html
+        assert "banned phrase" in html
+
+    def test_unverified_brief_is_named(self):
+        html = self._row(dates_verified=False)
+        assert "DATES" in html
+        assert "primary source" in html
+
+    def test_requeued_entry_shows_its_stale_verdict(self):
+        html = self._row(gate_stale=True)
+        assert "STALE" in html
+        assert "re-gated" in html
+
+    def test_entry_with_no_recorded_verdict_reads_as_ungated(self):
+        # Absence is not a pass. An entry that predates gate recording, or was added by
+        # something that never ran the gate, must not render as a clean one.
+        html = _approve_list(
+            [{"slug": "foo", "draft_path": "staging/drafts/draft-001-v1.md"}],
+            **self.APPROVE_KWARGS,
+        )
+        assert "UNGATED" in html
+
+    def test_row_content_is_html_escaped(self):
+        html = self._row(title="Wages <script>alert(1)</script> & levies")
+        assert "<script>" not in html
+        assert "&lt;script&gt;" in html
+        assert "&amp; levies" in html
+
+    def test_buttons_stay_enabled_on_a_blocked_entry(self):
+        # Rendering the reason is this module's job; disabling a control owned by the
+        # consuming repo's /api/approve endpoint is not.
+        html = self._row(gate_passed=False)
+        assert "disabled" not in html
+        assert 'class="approve-btn"' in html
+
+
+class TestDraftSummary:
+    DRAFT = "# A Real Headline\n\nThe opening paragraph of the article body.\n\nMore prose here.\n"
+
+    def test_reads_title_word_count_and_excerpt_from_the_draft(self, tmp_path):
+        (tmp_path / "staging" / "drafts").mkdir(parents=True)
+        (tmp_path / "staging" / "drafts" / "d.md").write_text(self.DRAFT, encoding="utf-8")
+        summary = _draft_summary(tmp_path, {"draft_path": "staging/drafts/d.md"})
+        assert summary["title"] == "A Real Headline"
+        assert summary["word_count"] == len(
+            "The opening paragraph of the article body.\n\nMore prose here.".split()
+        )
+        assert "opening paragraph" in summary["excerpt"]
+
+    def test_recorded_word_count_wins_over_a_recount(self, tmp_path):
+        (tmp_path / "d.md").write_text(self.DRAFT, encoding="utf-8")
+        summary = _draft_summary(tmp_path, {"draft_path": "d.md", "word_count": 999})
+        assert summary["word_count"] == 999
+
+    def test_recorded_description_is_preferred_as_the_excerpt(self, tmp_path):
+        (tmp_path / "d.md").write_text(self.DRAFT, encoding="utf-8")
+        summary = _draft_summary(tmp_path, {"draft_path": "d.md", "description": "Recorded."})
+        assert summary["excerpt"] == "Recorded."
+
+    def test_missing_draft_renders_a_thinner_row_rather_than_raising(self, tmp_path):
+        # draft_path goes stale legitimately under the dir-move workflow. A dashboard that
+        # fails to render tells the approver less than one that renders with a gap.
+        summary = _draft_summary(tmp_path, {"draft_path": "staging/drafts/gone.md"})
+        assert summary == {"title": "", "word_count": None, "excerpt": ""}
+
+    def test_entry_with_no_draft_path_is_handled(self, tmp_path):
+        assert _draft_summary(tmp_path, {})["word_count"] is None
