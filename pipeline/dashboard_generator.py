@@ -32,6 +32,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from pipeline.brand_loader import consumer_root, load_brand
+from pipeline.queue_policy import recorded_blockers
 
 MAILERLITE_API_BASE = "https://connect.mailerlite.com/api"
 BUFFER_GRAPHQL_URL = "https://api.buffer.com/graphql"
@@ -57,11 +58,18 @@ def _load_json(path: Path):
 
 
 def _queue_stats(queue: list) -> dict:
+    # `pending_review` and `blocked` are bucketed because a dashboard that omits a state
+    # reports the queue as smaller than it is. Entries stranded at `pending_review`
+    # appeared in no bucket at all, so a queue that had stopped moving looked like a queue
+    # with nothing in it — the cadence appeared to have stalled on its schedule when it
+    # had actually stalled on a status with no exit.
     return {
         "published": [q for q in queue if q.get("status") == "published"],
         "approved": [q for q in queue if q.get("status") == "approved"],
         "queued": [q for q in queue if q.get("status") == "queued"],
         "held": [q for q in queue if q.get("status") == "hold"],
+        "pending_review": [q for q in queue if q.get("status") == "pending_review"],
+        "blocked": [q for q in queue if recorded_blockers(q)],
     }
 
 

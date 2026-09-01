@@ -48,6 +48,7 @@ from pipeline.brand_loader import (
 )
 from pipeline.compliance_gate import check as compliance_check
 from pipeline.compliance_gate import check_topic_overlap
+from pipeline.queue_policy import honoured_override, recorded_blockers
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Unsplash hero image
@@ -301,6 +302,36 @@ def md_to_html(body: str) -> tuple[str, str]:
 # ─────────────────────────────────────────────────────────────────────────────
 # Draft parsing
 # ─────────────────────────────────────────────────────────────────────────────
+
+def queue_entry_for(draft_path: Path, brand_cfg: BrandConfig) -> dict | None:
+    """The publish_queue.json entry for this draft, or None if it is not queued.
+
+    Matched on the RESOLVED path. The caller holds an absolute path by this point —
+    ``main`` resolves the argument against the brand workspace and then the repo root —
+    while the queue stores a brand-relative one. ``BrandConfig.resolve_draft_path`` is
+    used rather than a string comparison so this cannot drift from how every other reader
+    interprets the same field.
+
+    Returns None rather than raising when the queue file is absent: a brand that does not
+    keep a queue is a supported configuration, and the caller treats "not recorded" and
+    "no record kept" the same way.
+    """
+    if not brand_cfg.queue_path.exists():
+        return None
+    try:
+        queue = json.loads(brand_cfg.queue_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"ERROR: {brand_cfg.queue_path} is not valid JSON: {exc}") from exc
+
+    wanted = draft_path.resolve()
+    for item in queue:
+        if not isinstance(item, dict):
+            continue
+        stored = item.get("draft_path", "")
+        if stored and brand_cfg.resolve_draft_path(stored).resolve() == wanted:
+            return item
+    return None
+
 
 def parse_draft_text(text: str) -> tuple[str, str]:
     """Split draft markdown into its H1 title and the body beneath it.
@@ -959,7 +990,27 @@ def main() -> int:
         action="store_true",
         help="Generate all files but do not commit or push",
     )
+    parser.add_argument(
+        "--force-gate",
+        action="store_true",
+        help=(
+            "Publish past the queue's recorded blockers (failed gate, unverified figures, "
+            "stale verdict). Requires --reason. Does not affect the compliance gate itself."
+        ),
+    )
+    parser.add_argument(
+        "--reason",
+        default="",
+        help="Why the recorded blockers are being overridden. Required with --force-gate.",
+    )
     args = parser.parse_args()
+
+    # Required rather than optional so that every override, on every path, answers "why".
+    # A bare boolean records that someone bypassed a check and nothing about the judgement
+    # they made, which looks like an audit trail without being one.
+    if args.force_gate and not args.reason.strip():
+        print("ERROR: --force-gate requires --reason.", file=sys.stderr)
+        return 1
 
     # ── Load brand config ────────────────────────────────────────────────────
     brand_cfg = load_brand(args.brand)
@@ -1019,6 +1070,68 @@ def main() -> int:
             print(f"    • {f}", file=sys.stderr)
         return 1
     print("  ✓ Compliance gate passed")
+
+    # ── 2c. The queue's RECORDED verdict ──────────────────────────────────────
+    #
+    # The gate above scores PROSE, not truth. It has no way to tell a correct statistic
+    # from an invented one, so an article built on figures the brief itself records as
+    # unverified passes every rule it has. Whether those figures were ever checked is
+    # recorded on the queue entry — and until this block, nothing on the publish path
+    # read it. The flag was written at enqueue time and consulted by nobody.
+    #
+    # Placement matters more than it looks. This is [2c], not [5], because the first side
+    # effect of this run is NOT writing the article: step [4] fetches a hero image, which
+    # saves the asset into the site checkout and records the photo ID in the brand
+    # workspace so it is never reused. A refusal after that point has already spent a
+    # one-time resource on an article that will not ship.
+    #
+    # What is deliberately NOT checked here: the entry's `status`. That is the consuming
+    # repository's approval model, not the engine's business — a dir-move brand may hold
+    # an entry whose draft_path still names the pre-move location, and hardcoding a ready
+    # status would break it. For the same reason an entry that is absent from the queue
+    # warns and proceeds: "do not publish what the record says is blocked" is this
+    # module's rule; "do not publish what is not in the record" belongs to the caller,
+    # which knows its own workflow.
+    print("[2c/7] Checking the queue's recorded verdict…")
+    entry = queue_entry_for(draft_path, brand_cfg)
+    if entry is None:
+        print(
+            f"  ⚠  {draft_path.name} is not in {brand_cfg.queue_path.name} — publishing a draft "
+            "whose compliance verdict and fact check were never recorded."
+        )
+    else:
+        blockers = recorded_blockers(entry)
+        try:
+            override = honoured_override(entry)
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+
+        if blockers and override:
+            print(f"  ⚠  gate_override honoured: {override['by']} — \"{override['reason']}\"")
+            for reason in blockers:
+                print(f"    • overridden: {reason}")
+        elif blockers and args.force_gate:
+            # --dry-run does NOT relax this. A dry run still writes the hero asset, the
+            # article page, the index card, the social variants and the sitemap; only the
+            # push is skipped. A rehearsal that passes where the real run refuses tells
+            # the operator the opposite of what they asked it.
+            print(f"  ⚠  --force-gate: proceeding past {len(blockers)} recorded blocker(s).")
+            print(f"     Reason given: {args.reason}")
+            for reason in blockers:
+                print(f"    • forced past: {reason}")
+        elif blockers:
+            print("  ✗ The publish queue records that this article must not ship.", file=sys.stderr)
+            for reason in blockers:
+                print(f"    • {reason}", file=sys.stderr)
+            print(
+                "\n  Fix the draft and re-run the gate, verify the brief's figures, or re-run "
+                "with --force-gate --reason '<why>'.",
+                file=sys.stderr,
+            )
+            return 1
+        else:
+            print("  ✓ Queue records no blockers")
 
     # ── 3. Derive slug + description ──────────────────────────────────────────
     print("[3/7] Generating slug and description…")
