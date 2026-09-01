@@ -388,15 +388,42 @@ def make_slug(title: str) -> str:
     return slug
 
 
+DESCRIPTION_LIMIT = 155
+
+
+def truncate_description(text: str, limit: int = DESCRIPTION_LIMIT) -> str:
+    """Shorten a meta description to `limit` characters without cutting a word in half.
+
+    A bare `text[:limit]` ends wherever the limit'th character happens to fall, which is
+    usually mid-word, and this result is what ships: it becomes the page's
+    <meta name="description"> and the description in its JSON-LD block. Cut at the last
+    word boundary that still leaves room for the ellipsis instead, and drop the trailing
+    punctuation the cut exposes.
+
+    Text already within the limit is returned unchanged, with NO ellipsis — an ellipsis
+    on a complete sentence claims something was removed when nothing was. A single token
+    longer than the limit has no boundary to find and falls back to a hard cut; that is
+    the one case where a mid-word break is the only option available.
+    """
+    text = re.sub(r"\s+", " ", text or "").strip()
+    if len(text) <= limit:
+        return text
+
+    # limit - 1 reserves the one character the ellipsis occupies, so the result is never
+    # longer than the limit it was asked for.
+    head = text[: limit - 1]
+    cut = head.rsplit(" ", 1)[0] if " " in head else head
+    cut = cut.rstrip(" ,;:.–—-")
+    return (cut or head) + "…"
+
+
 def make_description(body: str, brief: dict | None) -> str:
     if brief and brief.get("topic_statement"):
-        raw = brief["topic_statement"]
-        return raw[:155].rstrip() + ("…" if len(raw) > 155 else "")
+        return truncate_description(brief["topic_statement"])
     plain = re.sub(r"[*#`\[\]()_]", "", body)
     plain = re.sub(r"\s+", " ", plain).strip()
     first_para = plain.split("\n\n")[0] if "\n\n" in plain else plain[:300]
-    first_para = first_para.strip()
-    return first_para[:155].rstrip() + ("…" if len(first_para) > 155 else "")
+    return truncate_description(first_para)
 
 
 def read_time(text: str) -> int:
