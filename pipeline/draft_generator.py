@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from banned_phrases import BANNED_PHRASES, LEVERAGE_SYNONYMS, DELVE_SYNONYMS, UNLOCK_SYNONYMS
 from pipeline.brand_loader import DEFAULT_BRAND, BrandConfig, load_brand, load_phrase_banks
 from pipeline.compliance_gate import GateResult, check as gate_check
+from pipeline.publisher import parse_draft_text
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
@@ -247,6 +248,38 @@ ORIGINAL ARTICLE TO REVISE:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Gate
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _gate(article: str, brief: dict, brand_cfg: BrandConfig) -> GateResult:
+    """Run the compliance gate on an article, scored against its OWN headline.
+
+    The `title` argument must be the H1 the article actually carries — the same string
+    `publisher` parses and gates at publish time. It used to be `brief["topic_statement"]`,
+    which is a different object entirely: a topic statement is a paragraph of prose written
+    upstream by the topic selector, while a title is a headline.
+
+    That mismatch is not cosmetic. `compliance_gate._check_title` hard-fails on an em dash
+    because an em dash is an AI tell *in a headline*, and it says nothing about body prose,
+    where the dash is ordinary punctuation. Any brief whose topic statement contains one
+    therefore failed the gate no matter how clean the article was, and the retry that
+    followed was worse than wasted: `_build_retry_prompt` hands the flags back to the model
+    and asks it to fix a string it did not write and cannot see, so attempt 2 fails
+    identically for two flagship calls instead of one.
+
+    Two callers gating one article against two different notions of "the title" also means
+    the verdict recorded at generation time and the verdict that blocks at publish time can
+    disagree about the same file. Parsing the H1 here makes them the same check.
+
+    An article with no H1 yields `title=""`, which makes the headline checks a no-op — the
+    same no-op `publisher` performs on a titleless draft, and the same one this function
+    performed whenever a brief carried no topic statement.
+    """
+    title, _body = parse_draft_text(article)
+    return gate_check(article, title=title, brief=brief, brand_name=brand_cfg.display_name)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Output path resolution
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -367,8 +400,7 @@ def generate(
         )
 
     # ── Gate check (attempt 1) ───────────────────────────────────────────────
-    title = brief.get("topic_statement", "")
-    result = gate_check(article, title=title, brief=brief, brand_name=brand_cfg.display_name)
+    result = _gate(article, brief, brand_cfg)
 
     if verbose:
         status = "PASS ✓" if result.passed else f"FAIL ✗ ({len(result.flags)} flag(s))"
@@ -404,7 +436,10 @@ def generate(
 
         article = retry_response.content[0].text
         word_count = len(article.split())
-        result = gate_check(article, title=title, brief=brief, brand_name=brand_cfg.display_name)
+        # Re-parse: the retry prompt asks for the complete article "start directly with
+        # # [Title]", so attempt 2 may carry a different headline. Gating it against
+        # attempt 1's title would be the same mistake in a smaller form.
+        result = _gate(article, brief, brand_cfg)
 
         if verbose:
             print(f"    Generated {word_count} words")

@@ -302,8 +302,15 @@ def md_to_html(body: str) -> tuple[str, str]:
 # Draft parsing
 # ─────────────────────────────────────────────────────────────────────────────
 
-def parse_draft(draft_path: Path) -> tuple[str, str]:
-    text = draft_path.read_text(encoding="utf-8")
+def parse_draft_text(text: str) -> tuple[str, str]:
+    """Split draft markdown into its H1 title and the body beneath it.
+
+    The text-level half of `parse_draft`, split out so a caller holding the article in
+    memory can obtain the same title this module parses at publish time. Without it, a
+    caller that has not yet written the draft to disk has nothing to pass as `title=` and
+    ends up inventing a substitute — which is how the generator came to gate a brief's
+    prose topic statement under rules written for a headline.
+    """
     lines = text.split("\n")
 
     title = ""
@@ -319,6 +326,10 @@ def parse_draft(draft_path: Path) -> tuple[str, str]:
 
     body = "\n".join(lines[body_start:]).strip()
     return title, body
+
+
+def parse_draft(draft_path: Path) -> tuple[str, str]:
+    return parse_draft_text(draft_path.read_text(encoding="utf-8"))
 
 
 def load_brief(draft_path: Path, brand_cfg: BrandConfig) -> dict | None:
