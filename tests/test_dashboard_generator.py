@@ -38,10 +38,11 @@ RENDER_KWARGS = dict(
     published_count=1,
     approved_count=0,
     queued_count=1,
-    held_count=0,
     last_published={"slug": "my-published-article", "published_at": "2026-06-01"},
     next_approved=[],
     next_queued=[{"slug": "my-queued-article", "draft_path": "staging/drafts/draft-009-v1.md"}],
+    stalled=[],
+    blocked_count=0,
     draft_count=5,
     social={"linkedin": 2, "x": 1},
     buffer_sent_count=0,
@@ -248,3 +249,39 @@ class TestDraftSummary:
 
     def test_entry_with_no_draft_path_is_handled(self, tmp_path):
         assert _draft_summary(tmp_path, {})["word_count"] is None
+
+
+class TestStalledCard:
+    """`hold` and `pending_review` appear in no other card, so a queue stalled on one
+    of them rendered as a queue with nothing in it."""
+
+    def _html(self, **overrides):
+        kwargs = dict(RENDER_KWARGS)
+        kwargs.update(overrides)
+        return _render_html(**kwargs)
+
+    def test_pending_review_entry_is_counted_and_named(self):
+        html = self._html(stalled=[{"slug": "stranded-article"}])
+        assert "Stalled" in html
+        assert "stranded-article" in html
+
+    def test_stalled_card_offers_the_transition_out(self):
+        # `requeue` is the only exit from these statuses. A card that reports the state
+        # without naming the remedy leaves the operator where the missing transition did.
+        html = self._html(stalled=[{"slug": "stranded-article"}])
+        assert "queue_manager --brand acme requeue" in html
+
+    def test_empty_queue_renders_the_zero_state(self):
+        html = self._html(stalled=[], blocked_count=0)
+        assert "Nothing held or awaiting review" in html
+        assert "requeue" not in html
+
+    def test_blocked_entries_are_reported_but_not_added_to_the_count(self):
+        # A blocked entry is normally also `queued`, so counting it here would put the
+        # same article on two cards.
+        html = self._html(stalled=[], blocked_count=2)
+        assert "2 queued entries blocked on a recorded verdict" in html
+        assert "Nothing held or awaiting review" in html
+
+    def test_a_single_blocked_entry_reads_as_singular(self):
+        assert "1 queued entry blocked" in self._html(stalled=[], blocked_count=1)

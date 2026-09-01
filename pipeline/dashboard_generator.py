@@ -1420,10 +1420,11 @@ def _render_html(
     published_count: int,
     approved_count: int,
     queued_count: int,
-    held_count: int,
     last_published,
     next_approved: list,
     next_queued: list,
+    stalled: list,
+    blocked_count: int,
     draft_count: int,
     social: dict,
     buffer_sent_count: int,
@@ -1485,6 +1486,33 @@ def _render_html(
         needs_detail = "All articles approved or on hold"
         needs_border = "var(--primary)"
 
+    # Stalled card — `hold` and `pending_review`, the two statuses that appear in no other
+    # card on this page. A `held_count` was already being passed in and never rendered
+    # anywhere in this function, and `pending_review` later joined it in the same silence,
+    # so an entry in either state was invisible: a queue that had stopped moving rendered
+    # as a queue with nothing in it, and the cadence looked like it had stalled on its
+    # schedule rather than on a status. That parameter is gone — one list, counted once.
+    stalled_count = len(stalled)
+    if stalled_count:
+        requeue_cmd = f"python3 -m pipeline.queue_manager --brand {brand_slug} requeue &lt;slug&gt;"
+        stalled_detail = (
+            f"{_slug_list(stalled, limit=3)}"
+            f"<code style='font-size:0.68rem;color:#666'>{requeue_cmd}</code>"
+        )
+        stalled_border = "#d97706"
+    else:
+        stalled_detail = "Nothing held or awaiting review"
+        stalled_border = "var(--primary)"
+    if blocked_count:
+        # Reported, not counted in the headline: a blocked entry is normally also `queued`,
+        # so adding it to the total would count the same article on two cards.
+        stalled_detail += (
+            f"<br><span style='color:#b45309'>{blocked_count} queued "
+            f"{'entry' if blocked_count == 1 else 'entries'} blocked on a recorded "
+            f"verdict — approve will refuse.</span>"
+        )
+        stalled_border = "#d97706"
+
     # Drafts in staging — link to the GitHub drafts directory
     drafts_url = (
         f"https://github.com/{marketing_repo}/tree/main/brands/{brand_slug}/staging/drafts"
@@ -1499,6 +1527,9 @@ def _render_html(
         _card("Needs Approval", queued_count,
               f"queued, awaiting operator sign-off<br>{needs_detail}",
               border_color=needs_border, card_id="pipeline-needs-card") +
+        _card("Stalled", stalled_count,
+              f"held or awaiting review — no cron will move these<br>{stalled_detail}",
+              border_color=stalled_border, card_id="pipeline-stalled-card") +
         _card("Last Published", "—" if not last_published else "✓",
               last_pub_detail) +
         _card("Drafts in Staging", draft_count, drafts_detail) +
@@ -1993,7 +2024,8 @@ def generate_dashboard(brand_slug: str, output_path: Path | None = None) -> Path
         published_count=len(queue["published"]),
         approved_count=len(queue["approved"]),
         queued_count=len(queue["queued"]),
-        held_count=len(queue["held"]),
+        stalled=queue["held"] + queue["pending_review"],
+        blocked_count=len(queue["blocked"]),
         last_published=last_published,
         next_approved=next_approved,
         next_queued=next_queued,
