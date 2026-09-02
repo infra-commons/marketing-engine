@@ -37,6 +37,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pipeline.brand_loader import DEFAULT_BRAND, BrandConfig, load_brand
+from pipeline.publisher import truncate_description
 
 # MID tier (infra-commons/meta model-registry.yaml `tier_equivalence:`). Ranking
 # headlines against a brand's topic rules is routine selection, not drafting; no
@@ -353,9 +354,12 @@ def synthesize_brief(
         brief["article_type"] = "news-reaction"
     brief["dates_verified"] = False  # auto-generated → never pre-verified
     brief.setdefault("slug", _slugify(brief.get("topic_statement", brief["brief_id"])))
+    # Word-boundary truncation, not a bare slice: this value is copied into the publish
+    # queue at enqueue time and from there into the published page's meta description, so
+    # a mid-word cut here is a mid-word cut in shipped metadata.
     brief.setdefault(
         "description",
-        (brief.get("angle") or brief.get("topic_statement", ""))[:155],
+        truncate_description(brief.get("angle") or brief.get("topic_statement", "")),
     )
     return brief
 
