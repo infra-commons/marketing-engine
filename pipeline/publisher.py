@@ -420,10 +420,34 @@ def truncate_description(text: str, limit: int = DESCRIPTION_LIMIT) -> str:
 def make_description(body: str, brief: dict | None) -> str:
     if brief and brief.get("topic_statement"):
         return truncate_description(brief["topic_statement"])
-    plain = re.sub(r"[*#`\[\]()_]", "", body)
-    plain = re.sub(r"\s+", " ", plain).strip()
-    first_para = plain.split("\n\n")[0] if "\n\n" in plain else plain[:300]
-    return truncate_description(first_para)
+
+    # Split paragraphs BEFORE stripping markdown and collapsing whitespace. The previous
+    # order collapsed every newline first, which destroyed the blank lines the split was
+    # looking for: the `"\n\n" in plain` test could never be true, so the description was
+    # always the first 300 flattened characters of the article rather than its first
+    # paragraph. `generate_social_variants` splits first and is the pattern followed here.
+    #
+    # Headings and bullets are skipped for the same reason that function skips bullets: a
+    # description that opens on a section heading describes the section, not the article.
+    paragraphs = [p.strip() for p in re.split(r"\n\n+", body) if p.strip()]
+    prose = [p for p in paragraphs if not p.startswith(("#", "-"))]
+    first_para = (prose or paragraphs or [body])[0]
+
+    return truncate_description(re.sub(r"[*#`\[\]()_]", "", first_para))
+
+
+def _looks_hard_sliced(text: str | None) -> bool:
+    """True if `text` carries the signature of the old bare `[:DESCRIPTION_LIMIT]` cut.
+
+    That cut produced exactly `DESCRIPTION_LIMIT` characters and appended nothing, so a
+    description of exactly that length with no ellipsis was almost certainly ended by the
+    slice rather than by its author. `truncate_description` cannot detect this itself: the
+    string is within the limit, so it is returned untouched.
+
+    A heuristic, and treated as one -- it reports, it never rewrites.
+    """
+    stripped = (text or "").strip()
+    return len(stripped) == DESCRIPTION_LIMIT and not stripped.endswith("…")
 
 
 def read_time(text: str) -> int:
@@ -799,7 +823,7 @@ Read the full article ↓
 
     newsletter = f"""**{title}**
 
-{first_para[:300].rstrip()}{"…" if len(first_para) > 300 else ""}
+{truncate_description(first_para, 300)}
 
 Read the full article: {article_url}"""
 
@@ -809,9 +833,10 @@ Read the full article: {article_url}"""
 
     # X/Twitter — 280-char punchy version
     x_hashtags = social.get("x_hashtags", "")
-    hook = first_para[:200].rstrip()
-    if len(first_para) > 200:
-        hook += "…"
+    # Both of these ship to a reader -- the newsletter excerpt to a subscriber, this to a
+    # follower -- so they get the same word-boundary cut as the meta description. A bare
+    # slice ends wherever the limit'th character lands, which is usually mid-word.
+    hook = truncate_description(first_para, 200)
     x_post = f"{hook}\n\n{article_url}\n\n{x_hashtags}".strip()
     x_path = brand_cfg.social_dir / f"x-{slug}.txt"
     x_path.write_text(x_post, encoding="utf-8")
@@ -1163,10 +1188,28 @@ def main() -> int:
     # ── 3. Derive slug + description ──────────────────────────────────────────
     print("[3/7] Generating slug and description…")
     slug = args.slug or make_slug(title)
-    description = args.description or make_description(body, brief)
+    # The override goes through the same cut as the derived value. It arrives from the
+    # queue entry -- `queue_manager next` emits it, the caller passes it to
+    # `--description` -- and lands verbatim in <meta name="description"> and the JSON-LD
+    # block, so leaving it unbounded made the override the one path to the page that no
+    # length or boundary rule applied to.
+    description = truncate_description(args.description) if args.description else make_description(body, brief)
+    if _looks_hard_sliced(args.description):
+        # Truncating cannot repair this one: it is already within the limit, so it comes
+        # back unchanged. An entry queued before the boundary-aware cut existed still
+        # carries its mid-word slice, and this is the last point before it becomes a
+        # published page. Reported rather than re-derived -- silently replacing an
+        # author's description on the strength of a guess about its length would ship
+        # different copy than the operator approved, and leave no trace that it had.
+        print(
+            f"  ⚠ description is exactly {DESCRIPTION_LIMIT} characters with no ellipsis — it was "
+            "probably cut by the old hard slice and may end mid-word. Publishing it as recorded; "
+            "edit the queue entry's `description` to change it.",
+            file=sys.stderr,
+        )
     mins = read_time(body)
     print(f"  Slug: {slug}")
-    print(f"  Description: {description[:80]}…")
+    print(f"  Description: {truncate_description(description, 80)}")
     print(f"  Read time: {mins} min")
 
     # ── 3b. Title duplicate check ─────────────────────────────────────────────
