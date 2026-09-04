@@ -18,6 +18,7 @@ from pipeline.dashboard_generator import (  # noqa: E402
     _draft_summary,
     _parse_token_expiry,
     _render_html,
+    _slug_list,
     _theme_vars,
     _token_warnings,
 )
@@ -285,3 +286,116 @@ class TestStalledCard:
 
     def test_a_single_blocked_entry_reads_as_singular(self):
         assert "1 queued entry blocked" in self._html(stalled=[], blocked_count=1)
+
+
+class TestRecordedGateReasons:
+    """The gate's reasons reach the row, not just its verdict.
+
+    `gate_flags` had a reader (`queue_policy.recorded_blockers` names them in the sentence
+    it renders) and a clearer (`requeue`) before it had a writer, so the parenthesis was
+    always empty in practice: a failed entry told its approver that it failed and never
+    why. `gate_warnings` had no reader at all.
+    """
+
+    KWARGS = TestApproveRowContent.APPROVE_KWARGS
+
+    def _row(self, **overrides):
+        item = {
+            "slug": "foo",
+            "draft_path": "staging/drafts/draft-001-v1.md",
+            "title": "What The Wage Change Actually Costs",
+            "word_count": 1240,
+            "excerpt": "The headline rate is the smallest part of the bill.",
+            "gate_passed": True,
+            "gate_flags": [],
+            "gate_warnings": [],
+            "dates_verified": True,
+        }
+        item.update(overrides)
+        return _approve_list([item], **self.KWARGS)
+
+    def test_recorded_flags_are_named_in_the_blocker_sentence(self):
+        html = self._row(gate_passed=False, gate_flags=["em dash in headline", "banned phrase"])
+        assert "failed the compliance gate" in html
+        assert "em dash in headline" in html
+        assert "banned phrase" in html
+
+    def test_advisory_warnings_are_rendered(self):
+        html = self._row(gate_warnings=["a 2026 figure does not appear in the brief"])
+        assert "a 2026 figure does not appear in the brief" in html
+        assert "approve-warning" in html
+
+    def test_a_warning_does_not_read_as_a_blocker(self):
+        # An advisory does not refuse a publish. Styling the two alike would either inflate
+        # a warning into a block or deflate a block into a note.
+        html = self._row(gate_warnings=["an advisory"])
+        assert "approve-blocker" not in html
+        assert "an advisory" in html
+
+    def test_a_blocked_entry_can_carry_warnings_too(self):
+        html = self._row(gate_passed=False, gate_flags=["banned phrase"], gate_warnings=["an advisory"])
+        assert "approve-blocker" in html
+        assert "approve-warning" in html
+
+    def test_warnings_are_html_escaped(self):
+        html = self._row(gate_warnings=["<script>alert(1)</script>"])
+        assert "<script>" not in html
+        assert "&lt;script&gt;" in html
+
+    def test_a_gated_entry_with_no_reasons_shows_neither(self):
+        # Empty lists are a positive statement that the gate ran and found nothing.
+        html = self._row()
+        assert "approve-blocker" not in html
+        assert "approve-warning" not in html
+        assert "approve-verdict" not in html
+
+
+class TestNothingWaitingIsHidden:
+    """The card that exists to show what is waiting shows all of it.
+
+    It was capped at three while the count above it reported the true total, so a fourth
+    waiting article was invisible and the card disagreed with its own headline.
+    """
+
+    def _items(self, n):
+        return [{"slug": f"article-{i}", "draft_path": f"staging/drafts/draft-{i}-v1.md"} for i in range(n)]
+
+    def test_a_fourth_queued_article_is_rendered(self):
+        html = _approve_list(self._items(4), **TestApproveRowContent.APPROVE_KWARGS)
+        for i in range(4):
+            assert f"article-{i}" in html
+        assert html.count('class="approve-btn"') == 4
+
+    def test_a_much_longer_queue_is_rendered_in_full(self):
+        html = _approve_list(self._items(12), **TestApproveRowContent.APPROVE_KWARGS)
+        assert html.count('class="approve-btn"') == 12
+
+    def test_an_explicit_limit_is_still_honoured(self):
+        html = _approve_list(self._items(4), limit=2, **TestApproveRowContent.APPROVE_KWARGS)
+        assert html.count('class="approve-btn"') == 2
+
+
+class TestSlugListElision:
+    """The compact lists keep their cap but stop hiding it.
+
+    A list silently shorter than the number printed above it is two statements about the
+    same set that disagree, with no way to tell which is wrong.
+    """
+
+    def _items(self, n):
+        return [{"slug": f"article-{i}"} for i in range(n)]
+
+    def test_an_elided_list_says_how_many_it_dropped(self):
+        assert "+2 more" in _slug_list(self._items(5))
+
+    def test_a_list_within_the_cap_says_nothing(self):
+        assert "more" not in _slug_list(self._items(3))
+
+    def test_a_list_exactly_one_over_names_the_one(self):
+        assert "+1 more" in _slug_list(self._items(4))
+
+    def test_the_marker_is_not_rendered_as_a_slug(self):
+        assert 'class="slug-more"' in _slug_list(self._items(5))
+
+    def test_an_empty_list_still_renders_the_dash(self):
+        assert _slug_list([]) == "<p>—</p>"

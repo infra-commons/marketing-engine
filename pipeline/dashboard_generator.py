@@ -862,17 +862,37 @@ def _days_label(days: int) -> str:
 
 
 def _slug_list(items: list, key: str = "slug", limit: int = 3) -> str:
+    """A short list of slugs, capped, saying so when it elides.
+
+    The cap stays -- these feed compact cards that sit beside a count. What changes is
+    that the elision is now visible: a list silently shorter than the number printed above
+    it is two statements about the same set that disagree, and the reader has no way to
+    tell which one is wrong.
+    """
     rows = ""
     for item in items[:limit]:
         slug = item.get(key, "—")
         rows += f"<li>{slug}</li>"
-    return f'<ul class="slug-list">{rows}</ul>' if rows else "<p>—</p>"
+    if not rows:
+        return "<p>—</p>"
+    hidden = len(items) - limit
+    if hidden > 0:
+        rows += f'<li class="slug-more">+{hidden} more</li>'
+    return f'<ul class="slug-list">{rows}</ul>'
 
 
 def _approve_list(items: list, staging_site_url: str, marketing_repo: str, brand_slug: str,
-                  key: str = "slug", limit: int = 3) -> str:
+                  key: str = "slug", limit: int | None = None) -> str:
+    """Every article waiting on the operator, one row each.
+
+    Uncapped by default. This is the one card on the page whose purpose is to show what is
+    waiting, and it was capped at three while the count above it reported the true total --
+    so a fourth waiting article was invisible, and the card disagreed with its own headline.
+    Unlike the compact slug lists these rows carry the article, so an elided one is not a
+    shorter list, it is an article nobody was shown.
+    """
     rows = ""
-    for item in items[:limit]:
+    for item in (items[:limit] if limit is not None else items):
         slug = item.get(key, "—")
         preview_url = f"{staging_site_url}/articles/{slug}"
         draft_path = item.get("draft_path", "")
@@ -912,6 +932,13 @@ def _approve_list(items: list, staging_site_url: str, marketing_repo: str, brand
             detail += f'<span class="approve-excerpt">{excerpt}</span>'
         for reason in recorded_blockers(item):
             detail += f'<span class="approve-blocker">⚠ {html.escape(reason)}</span>'
+        # Advisories, styled apart from the blockers rather than beside them. The gate's
+        # warnings do not refuse a publish and rendering them identically would either
+        # inflate a warning into a block or deflate a block into a note; the ⚠ glyph stays
+        # the blocker's mark. An advisory nobody sees is not an advisory, which is what
+        # these were until the queue began recording them.
+        for note in item.get("gate_warnings") or []:
+            detail += f'<span class="approve-warning">{html.escape(str(note))}</span>'
 
         rows += (
             f'<li class="approve-item">'
@@ -1480,7 +1507,7 @@ def _render_html(
 
     # Needs Approval card — shows queued items waiting for the operator
     if queued_count:
-        needs_detail = _approve_list(next_queued, staging_site_url, marketing_repo, brand_slug, limit=3)
+        needs_detail = _approve_list(next_queued, staging_site_url, marketing_repo, brand_slug)
         needs_border = "#d97706"
     else:
         needs_detail = "All articles approved or on hold"
@@ -1632,6 +1659,12 @@ def _render_html(
                      font-size: 0.73rem; color: #555; padding: 2px 0;
                      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
     .slug-list li::before {{ content: "→ "; color: var(--primary); }}
+    /* The elision marker is not a slug: no arrow, no monospace. */
+    .slug-list .slug-more {{ font-family: inherit; color: #8a8a8a; font-style: italic; }}
+    .slug-list .slug-more::before {{ content: none; }}
+    /* An approve row carries its own arrow on `.approve-slug`, so the generic one on
+       `.slug-list li` was a second arrow on a flex container it does not lay out. */
+    .approve-list .approve-item::before {{ content: none; }}
 
     /* Badges */
     .badge {{ display: inline-flex; align-items: center; padding: 2px 9px;
@@ -1708,6 +1741,8 @@ def _render_html(
     .approve-facts {{ font-size: 0.66rem; color: #777; padding-left: 16px; }}
     .approve-excerpt {{ font-size: 0.68rem; color: #555; line-height: 1.35; padding-left: 16px; }}
     .approve-blocker {{ font-size: 0.66rem; color: #b45309; line-height: 1.35; padding-left: 16px; }}
+    .approve-warning {{ font-size: 0.66rem; color: #8a8a8a; line-height: 1.35; padding-left: 16px;
+                       font-style: italic; }}
     .approve-verdict {{ font-weight: 700; color: #b45309; letter-spacing: 0.03em; }}
     .approve-slug {{ font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace;
                     font-size: 0.73rem; color: #555; overflow: hidden; text-overflow: ellipsis;
@@ -1967,7 +2002,10 @@ def generate_dashboard(brand_slug: str, output_path: Path | None = None) -> Path
     next_approved = queue["approved"][:3]
     # Enriched here rather than inside the renderer, so the render stays a pure function of
     # its arguments and each draft is read once, in the one place that knows the brand dir.
-    next_queued = [{**q, **_draft_summary(brand.brand_dir, q)} for q in queue["queued"][:3]]
+    # Every queued entry, not the first three: the renderer no longer caps, and enriching a
+    # subset would have reinstated the same cap one layer down and rendered the rest blank.
+    # One draft read each, on a page generated once a day.
+    next_queued = [{**q, **_draft_summary(brand.brand_dir, q)} for q in queue["queued"]]
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     # Brand dashboard config

@@ -351,3 +351,105 @@ def test_publisher_returns_none_for_a_draft_that_is_not_queued(brand):
     cfg = queue_manager.load_brand(brand)
     seed(brand, [item()])
     assert queue_entry_for(cfg.resolve_draft_path("staging/drafts/absent-001-v1.md"), cfg) is None
+
+
+class TestGateReasonsAreRecorded:
+    """`add` records WHY the gate ruled, not only that it did.
+
+    `gate_flags` and `gate_warnings` were in `_VERDICT_KEYS` — `requeue` cleared them — and
+    `queue_policy.recorded_blockers` rendered the flags into the sentence it shows an
+    approver. Neither key had a writer anywhere in the pipeline, so the flags were always
+    absent and the parenthesis always empty: a failed entry said it had failed and never
+    why. The advisory warnings, which include the only check that looks at whether the
+    article's figures are grounded in its brief, were discarded entirely.
+    """
+
+    def _add(self, brand_slug, **kw):
+        args = dict(
+            brand=brand_slug,
+            draft_path="staging/drafts/draft-001-v1.md",
+            slug="a-slug",
+            description="d",
+            gate_failed=False,
+        )
+        args.update(kw)
+        assert queue_manager.cmd_add(_ns(**args)) == 0
+        return read(brand_slug)[0]
+
+    def test_flags_and_warnings_are_recorded(self, brand):
+        entry = self._add(
+            brand,
+            gate_failed=True,
+            gate_flags=["em dash in headline"],
+            gate_warnings=["a 2026 figure does not appear in the brief"],
+        )
+        assert entry["gate_flags"] == ["em dash in headline"]
+        assert entry["gate_warnings"] == ["a 2026 figure does not appear in the brief"]
+
+    def test_a_clean_gate_records_empty_lists_not_absent_keys(self, brand):
+        # The same argument `gate_passed` is written unconditionally for: an absent key
+        # would mean "no flags" OR "nothing looked", and a reader who cannot tell those
+        # apart has to treat an ungated entry as a clean one. An empty list says it ran.
+        entry = self._add(brand, gate_flags=[], gate_warnings=[])
+        assert entry["gate_flags"] == []
+        assert entry["gate_warnings"] == []
+
+    def test_a_caller_that_passes_neither_still_records_both(self, brand):
+        # Callers predating these keys must not produce an entry that reads as ungated.
+        entry = self._add(brand)
+        assert entry["gate_flags"] == []
+        assert entry["gate_warnings"] == []
+
+    def test_recorded_flags_reach_the_blocker_sentence(self, brand):
+        entry = self._add(brand, gate_failed=True, gate_flags=["banned phrase"])
+        reasons = recorded_blockers(entry)
+        assert any("banned phrase" in r for r in reasons), reasons
+
+    def test_warnings_do_not_block(self, brand):
+        # Advisory means advisory. A warning must not become a refusal by being recorded.
+        entry = self._add(brand, gate_warnings=["an advisory"])
+        assert recorded_blockers(entry) == []
+
+    def test_requeue_clears_them_with_the_rest_of_the_verdict(self, brand):
+        self._add(brand, gate_failed=True, gate_flags=["banned phrase"], gate_warnings=["w"])
+        seed(brand, [{**read(brand)[0], "status": "hold"}])
+        assert queue_manager.cmd_requeue(_ns(brand=brand, slug="a-slug")) == 0
+        entry = read(brand)[0]
+        assert "gate_flags" not in entry
+        assert "gate_warnings" not in entry
+        assert entry["gate_stale"] is True
+
+
+class TestDraftPipelineHandsOverTheGateResult:
+    """The generating run is the only place the gate's reasons exist, so it must pass them.
+
+    `draft_pipeline` held a full GateResult and forwarded one boolean off it.
+    """
+
+    def test_add_args_carry_the_flags_and_warnings(self, brand, tmp_path, monkeypatch):
+        from pipeline import draft_pipeline
+
+        brand_dir = tmp_path / "brands" / "testbrand"
+        (brand_dir / "staging" / "briefs" / "b1.json").write_text(
+            json.dumps({"brief_id": "b1", "slug": "a-slug", "description": "d"}), encoding="utf-8"
+        )
+        draft = brand_dir / "staging" / "drafts" / "draft-001-v1.md"
+        draft.write_text("# A Headline\n\nBody.\n", encoding="utf-8")
+
+        class _Result:
+            passed = False
+            flags = ["em dash in headline"]
+            warnings = ["a 2026 figure does not appear in the brief"]
+
+        captured = {}
+        monkeypatch.setattr(
+            draft_pipeline.draft_generator, "generate",
+            lambda brief_rel, brand_slug, verbose: (draft, _Result()),
+        )
+        monkeypatch.setattr(draft_pipeline, "cmd_add", lambda args: captured.update(vars(args)))
+
+        draft_pipeline.run(brand_slug=brand, existing_brief="b1")
+
+        assert captured["gate_failed"] is True
+        assert captured["gate_flags"] == ["em dash in headline"]
+        assert captured["gate_warnings"] == ["a 2026 figure does not appear in the brief"]

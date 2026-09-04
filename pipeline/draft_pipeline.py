@@ -88,6 +88,12 @@ def run(
         slug=brief.get("slug", ""),
         description=brief.get("description", ""),
         gate_failed=not gate_result.passed,
+        # The gate's reasons, not just its verdict. Without these the queue records THAT
+        # an article failed and never WHY, and the advisory warnings -- which include the
+        # date-grounding one, the only check that looks at whether the article's figures
+        # are grounded in its brief -- were discarded here and existed nowhere afterwards.
+        gate_flags=list(gate_result.flags),
+        gate_warnings=list(gate_result.warnings),
     )
     cmd_add(add_args)
 

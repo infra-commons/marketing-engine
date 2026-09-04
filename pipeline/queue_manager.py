@@ -268,6 +268,18 @@ def cmd_add(args: argparse.Namespace) -> int:
     # thing: the entry predates this change.
     entry["gate_passed"] = not getattr(args, "gate_failed", False)
 
+    # The gate's reasons, recorded beside its verdict. `gate_flags` already had readers --
+    # `queue_policy.recorded_blockers` names them in the sentence it renders, and `requeue`
+    # clears them -- but nothing in the pipeline ever wrote either key, so a failed entry
+    # told its approver that it failed and never why, and the advisory warnings existed
+    # nowhere at all.
+    #
+    # Written unconditionally, both ways, for the same reason `gate_passed` is: a missing
+    # key would mean "no flags" OR "nothing looked", and a reader who cannot tell those
+    # apart has to treat an ungated entry as a clean one. An empty list says the gate ran.
+    entry["gate_flags"] = list(getattr(args, "gate_flags", None) or [])
+    entry["gate_warnings"] = list(getattr(args, "gate_warnings", None) or [])
+
     # `dates_verified` is a property of the brief, and the brief is what the gate cannot
     # check: it scores prose, not truth. Copied here so every consumer has the record,
     # including those that do not run a separate re-gate step. Omitted with a warning when
@@ -568,6 +580,25 @@ def main() -> int:
         dest="gate_failed",
         action="store_true",
         help="Mark the draft as having failed the compliance gate (flags it for the human approver)",
+    )
+    # Repeatable, so a caller that ran the gate itself can record what it found rather than
+    # only that something was found. Without these the CLI path can record a verdict with
+    # no reasons attached, which is the state this change exists to remove.
+    p_add.add_argument(
+        "--gate-flag",
+        dest="gate_flags",
+        action="append",
+        default=[],
+        metavar="REASON",
+        help="A hard compliance-gate flag on this draft (repeatable)",
+    )
+    p_add.add_argument(
+        "--gate-warning",
+        dest="gate_warnings",
+        action="append",
+        default=[],
+        metavar="REASON",
+        help="An advisory compliance-gate warning on this draft (repeatable)",
     )
     p_add.set_defaults(func=cmd_add)
 
