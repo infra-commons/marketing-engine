@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pipeline.publisher import (  # noqa: E402
     DESCRIPTION_LIMIT,
+    _looks_hard_sliced,
     make_description,
     truncate_description,
 )
@@ -83,3 +84,65 @@ class TestMakeDescription:
     def test_short_brief_statement_gets_no_ellipsis(self):
         out = make_description("body", {"topic_statement": "A complete short sentence."})
         assert out == "A complete short sentence."
+
+
+class TestMakeDescriptionSource:
+    """Which text the description is derived from, not just how it is cut.
+
+    `make_description` collapsed all whitespace before testing for a paragraph break, so
+    the break could never be found and the description was the first 300 flattened
+    characters of the article rather than its first paragraph.
+    """
+
+    BODY = (
+        "## Why this matters\n\n"
+        "- a bullet that is not the article\n\n"
+        "The opening paragraph is the one a search result should show.\n\n"
+        "A second paragraph that belongs to no description."
+    )
+
+    def test_the_first_prose_paragraph_is_used(self):
+        out = make_description(self.BODY, None)
+        assert out == "The opening paragraph is the one a search result should show."
+
+    def test_a_leading_heading_is_not_part_of_the_description(self):
+        assert "Why this matters" not in make_description(self.BODY, None)
+
+    def test_a_leading_bullet_is_not_part_of_the_description(self):
+        assert "a bullet" not in make_description(self.BODY, None)
+
+    def test_a_later_paragraph_is_not_pulled_in(self):
+        assert "second paragraph" not in make_description(self.BODY, None)
+
+    def test_a_body_of_only_headings_still_returns_something(self):
+        # No prose to prefer — fall back rather than return an empty description.
+        assert make_description("## Only a heading\n", None).strip() == "Only a heading"
+
+    def test_paragraph_longer_than_the_limit_is_still_cut_on_a_boundary(self):
+        out = make_description(LONG + "\n\nA second paragraph.", None)
+        assert len(out) <= DESCRIPTION_LIMIT
+        assert out.endswith("…")
+        assert LONG[len(out.rstrip("…"))] == " "
+
+
+class TestLegacyHardSliceDetection:
+    """The signature of the old bare slice, which truncating cannot repair."""
+
+    def test_a_value_at_exactly_the_limit_with_no_ellipsis_is_flagged(self):
+        assert _looks_hard_sliced("x" * DESCRIPTION_LIMIT) is True
+
+    def test_truncating_a_legacy_value_leaves_it_unchanged(self):
+        # Which is the whole reason the check exists: the damaged string is within the
+        # limit, so `truncate_description` has nothing to do and reports nothing.
+        legacy = "x" * DESCRIPTION_LIMIT
+        assert truncate_description(legacy) == legacy
+
+    def test_a_properly_truncated_value_is_not_flagged(self):
+        assert _looks_hard_sliced(truncate_description(LONG)) is False
+
+    def test_a_short_value_is_not_flagged(self):
+        assert _looks_hard_sliced("A complete short description.") is False
+
+    def test_empty_and_none_are_not_flagged(self):
+        assert _looks_hard_sliced("") is False
+        assert _looks_hard_sliced(None) is False
