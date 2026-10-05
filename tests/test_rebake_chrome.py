@@ -204,3 +204,43 @@ class TestRebakeDir:
         results = rebake_dir(articles, CANON_NAV, CANON_FOOTER, write=True)
         assert all(not fr.written for fr in results)
         assert all(not fr.result.changed for fr in results)
+
+
+# Content an article carries between the footer and </body> — e.g. a brand's
+# newsletter-signup script. Not chrome, so a re-bake must leave it alone.
+SIGNUP_SCRIPT = '<script>/* newsletter signup: art-signup-form */</script>'
+
+
+class TestTrailingContentSurvives:
+    def _with_trailer(self, nav: str, footer: str) -> str:
+        return _article(nav, f"{footer}\n{SIGNUP_SCRIPT}")
+
+    def test_trailing_script_survives_footer_rewrite(self):
+        html = self._with_trailer(CANON_NAV, OLD_FOOTER)
+        r = rebake_html(html, CANON_NAV, CANON_FOOTER)
+        assert r.changed and not r.skipped
+        assert r.new_html.count(SIGNUP_SCRIPT) == 1
+        assert "/* old burger */" not in r.new_html
+        assert r.new_html.count("/* burger menu */") == 1
+
+    def test_current_footer_with_trailing_script_is_noop(self):
+        html = self._with_trailer(CANON_NAV, CANON_FOOTER)
+        r = rebake_html(html, CANON_NAV, CANON_FOOTER)
+        assert not r.changed and not r.skipped
+        assert r.new_html == html
+
+    def test_rerun_keeps_trailing_script_and_is_noop(self):
+        once = rebake_html(self._with_trailer(VARIANT_TEXT_WORDMARK, OLD_FOOTER), CANON_NAV, CANON_FOOTER)
+        twice = rebake_html(once.new_html, CANON_NAV, CANON_FOOTER)
+        assert not twice.changed
+        assert twice.new_html.count(SIGNUP_SCRIPT) == 1
+
+    def test_write_keeps_trailing_script_on_disk(self, tmp_path):
+        articles = tmp_path / "articles"
+        articles.mkdir()
+        page = articles / "signup.html"
+        page.write_text(self._with_trailer(CANON_NAV, OLD_FOOTER), encoding="utf-8")
+        rebake_dir(articles, CANON_NAV, CANON_FOOTER, write=True)
+        written = page.read_text(encoding="utf-8")
+        assert SIGNUP_SCRIPT in written
+        assert "Old tagline." not in written
