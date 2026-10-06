@@ -13,6 +13,7 @@ block and the trailing footer block to the brand's current canonical chrome.
 Properties:
   - Idempotent: re-running on already-current files makes no changes, exits 0.
   - Chrome-only: body content, hero images, publish dates, inline CSS untouched.
+    Content after the footer (e.g. a signup <script> before </body>) survives.
   - Skip-and-report: a file whose header/footer block count != 1 is skipped, not
     corrupted.
   - Dry-run by default: prints a per-file summary + unified diff, writes nothing.
@@ -52,16 +53,22 @@ def _footer_pattern(footer_html: str) -> re.Pattern:
     """Pattern matching the inlined footer region in a published article.
 
     The publisher inlines the canonical footer_html (tagline strip + <footer> +
-    burger script) verbatim immediately before `</body>`. We anchor on the first
-    opening tag of the canonical footer_html (e.g. `<div class="tagline-strip">`)
-    and consume up to — but not including — `</body>`. Deriving the start anchor
-    from the canonical footer keeps this brand-agnostic.
+    burger script) verbatim near `</body>`. We anchor on the first opening tag of
+    the canonical footer_html (e.g. `<div class="tagline-strip">`) and end at the
+    first occurrence of its last closing tag (e.g. the burger `</script>`).
+    Ending there — not at `</body>` — leaves anything an article carries after
+    the footer (e.g. a newsletter-signup `<script>`) untouched. Deriving both
+    anchors from the canonical footer keeps this brand-agnostic.
     """
     m = re.match(r"\s*(<[^>]+>)", footer_html)
     if not m:
         raise ValueError("Canonical footer_html does not start with an HTML tag.")
     start = m.group(1)
-    return re.compile(re.escape(start) + r".*?(?=</body>)", re.DOTALL)
+    m = re.search(r"(</[^>]+>)\s*$", footer_html)
+    if not m:
+        raise ValueError("Canonical footer_html does not end with a closing HTML tag.")
+    end = m.group(1)
+    return re.compile(re.escape(start) + r".*?" + re.escape(end), re.DOTALL)
 
 
 @dataclass
@@ -97,7 +104,7 @@ def rebake_html(html: str, nav_html: str, footer_html: str) -> RebakeResult:
 
     # Function replacements avoid re backreference interpretation of the chrome.
     new_html = HEADER_RE.sub(lambda _m: nav_html, html)
-    new_html = footer_re.sub(lambda _m: footer_html + "\n", new_html)
+    new_html = footer_re.sub(lambda _m: footer_html, new_html)
 
     return RebakeResult(
         header_count,
