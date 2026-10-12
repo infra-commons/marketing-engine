@@ -40,7 +40,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from pipeline.brand_loader import DEFAULT_BRAND, load_brand
 
 MODEL = "claude-sonnet-5"
-MAX_TOKENS = 1024
+# Headroom for a report the model prefixes with reasoning; a cut-off report cannot parse.
+MAX_TOKENS = 4096
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -123,17 +124,62 @@ Check the draft for the following and report any issues:
 
 ## Output format
 
-Return a JSON object with this exact structure:
+Return ONLY a JSON object, with no text before or after it, in this exact structure:
 {{
-  "passed": true/false,
-  "errors": ["description of hard error 1", ...],
+  "errors": [{{"description": "description of hard error 1", "is_error": true}}, ...],
   "warnings": ["description of warning 1", ...]
 }}
 
-passed is true only if errors is empty.
+Set is_error to true only for a confirmed hard error. If you checked something and it
+turned out to be correct, either leave it out or set is_error to false — never list a
+non-error as an error.
 Be specific: quote the wrong number and state what it should be.
-If everything checks out, return {{"passed": true, "errors": [], "warnings": []}}.
+If everything checks out, return {{"errors": [], "warnings": []}}.
 """
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Response parsing
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _response_text(response) -> str:
+    """Join the text blocks. content[0] may be a thinking block, not the reply."""
+    return "".join(
+        getattr(b, "text", "") for b in response.content if getattr(b, "type", "text") == "text"
+    ).strip()
+
+
+def _extract_json(raw: str) -> dict | None:
+    """The report object, even when the model wraps it in prose or a code fence."""
+    decoder = json.JSONDecoder()
+    start = raw.find("{")
+    while start != -1:
+        try:
+            data, _ = decoder.raw_decode(raw, start)
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict) and "errors" in data:
+            return data
+        start = raw.find("{", start + 1)
+    return None
+
+
+def _hard_errors(items: list) -> list[str]:
+    """The confirmed errors. An item is dropped only when the model said is_error: false.
+
+    The model sometimes lists reasoning that retracts itself ("No hard arithmetic errors
+    are present"); counting that as an error discarded good drafts. Anything without an
+    explicit false (a bare string, a missing flag) still counts, so this fails closed.
+    """
+    errors = []
+    for item in items:
+        if isinstance(item, dict):
+            if item.get("is_error") is False:
+                continue
+            errors.append(str(item.get("description") or item))
+        else:
+            errors.append(str(item))
+    return errors
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -172,25 +218,23 @@ def check(
         messages=[{"role": "user", "content": prompt}],
     )
 
-    raw = response.content[0].text.strip()
+    raw = _response_text(response)
 
-    # Strip markdown code fences if present
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-        raw = raw.strip()
+    if getattr(response, "stop_reason", None) == "max_tokens":
+        return FactCheckResult(
+            passed=False,
+            flags=[f"Fact checker response was truncated at {MAX_TOKENS} tokens: {raw[:200]}"],
+        )
 
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
+    data = _extract_json(raw)
+    if data is None:
         # Claude didn't return valid JSON — treat as a checker error, not a pass
         return FactCheckResult(
             passed=False,
             flags=[f"Fact checker returned unparseable response: {raw[:200]}"],
         )
 
-    errors = data.get("errors", [])
+    errors = _hard_errors(data.get("errors") or [])
     warnings = data.get("warnings", [])
     passed = len(errors) == 0
 
