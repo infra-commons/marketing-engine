@@ -189,6 +189,24 @@ class TestCallClaudeTruncation:
         topic_selector._call_claude("prompt", "key", max_tokens=topic_selector.RETRY_MAX_TOKENS)
         assert captured[0]["max_tokens"] == topic_selector.RETRY_MAX_TOKENS
 
+    def test_a_leading_thinking_block_is_skipped(self, monkeypatch):
+        """With adaptive thinking on, content[0] is a thinking block, not the reply."""
+
+        class Thinking:
+            type = "thinking"
+            thinking = "reasoning"
+
+        plain = _FakeResponse
+
+        def with_thinking(text, stop_reason):
+            response = plain(text, stop_reason)
+            response.content.insert(0, Thinking())
+            return response
+
+        monkeypatch.setattr(sys.modules[__name__], "_FakeResponse", with_thinking)
+        _fake_anthropic(monkeypatch, '{"ok": true}', "end_turn")
+        assert topic_selector._call_claude("prompt", "key") == '{"ok": true}'
+
 
 class TestSynthesizeBriefTruncationRetry:
     def test_retries_once_after_truncation_then_succeeds(self, brand, monkeypatch):

@@ -453,3 +453,29 @@ class TestDraftPipelineHandsOverTheGateResult:
         assert captured["gate_failed"] is True
         assert captured["gate_flags"] == ["em dash in headline"]
         assert captured["gate_warnings"] == ["a 2026 figure does not appear in the brief"]
+
+    def test_a_failed_fact_check_never_reaches_the_queue(self, brand, tmp_path, monkeypatch):
+        """`generate` keeps a draft that fails the fact check, but still exits 1.
+
+        That exit is the whole of the queue contract for this case: no entry is written,
+        so no consumer mirroring `recorded_blockers` has a new field to learn.
+        """
+        from pipeline import draft_pipeline
+
+        brand_dir = tmp_path / "brands" / "testbrand"
+        (brand_dir / "staging" / "briefs" / "b1.json").write_text(
+            json.dumps({"brief_id": "b1", "slug": "a-slug", "description": "d"}), encoding="utf-8"
+        )
+
+        def failing_fact_check(brief_rel, brand_slug, verbose):
+            sys.exit(1)
+
+        added = []
+        monkeypatch.setattr(draft_pipeline.draft_generator, "generate", failing_fact_check)
+        monkeypatch.setattr(draft_pipeline, "cmd_add", added.append)
+
+        with pytest.raises(SystemExit) as exc:
+            draft_pipeline.run(brand_slug=brand, existing_brief="b1")
+
+        assert exc.value.code == 1
+        assert added == []
