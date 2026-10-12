@@ -37,6 +37,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pipeline.brand_loader import DEFAULT_BRAND, BrandConfig, load_brand
+from pipeline.claude_response import reply_text
 from pipeline.publisher import truncate_description
 
 # MID tier (infra-commons/meta model-registry.yaml `tier_equivalence:`). Ranking
@@ -309,7 +310,7 @@ def _call_claude(prompt: str, api_key: str, max_tokens: int = MAX_TOKENS) -> str
             f"model response was truncated at the {max_tokens}-token cap "
             f"(stop_reason=max_tokens) — the JSON brief is incomplete, not malformed."
         )
-    return resp.content[0].text
+    return reply_text(resp)
 
 
 def _extract_json(text: str) -> dict:

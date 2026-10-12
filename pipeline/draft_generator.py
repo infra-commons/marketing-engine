@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from banned_phrases import BANNED_PHRASES, LEVERAGE_SYNONYMS, DELVE_SYNONYMS, UNLOCK_SYNONYMS
 from pipeline.brand_loader import DEFAULT_BRAND, BrandConfig, load_brand, load_phrase_banks
+from pipeline.claude_response import reply_text
 from pipeline.compliance_gate import GateResult, check as gate_check
 from pipeline.publisher import parse_draft_text
 
@@ -387,7 +388,7 @@ def generate(
         ],
     )
 
-    article = response.content[0].text
+    article = reply_text(response)
     word_count = len(article.split())
 
     if verbose:
@@ -434,7 +435,7 @@ def generate(
             ],
         )
 
-        article = retry_response.content[0].text
+        article = reply_text(retry_response)
         word_count = len(article.split())
         # Re-parse: the retry prompt asks for the complete article "start directly with
         # # [Title]", so attempt 2 may carry a different headline. Gating it against
@@ -456,6 +457,15 @@ def generate(
             for warn in result.warnings:
                 print(f"    ⚠  {warn}")
 
+    # ── Resolve output path ──────────────────────────────────────────────────
+    # Before the fact check, so a failing draft can still be kept (below).
+    if output_path:
+        out_path = Path(output_path)
+        if not out_path.is_absolute():
+            out_path = brand_cfg.brand_dir / output_path
+    else:
+        out_path = _auto_output_path(brief, brand_cfg)
+
     # ── Fact check (opt-in: brand sets workflow.fact_check) ───────────────────
     if brand_cfg.workflow.get("fact_check"):
         from pipeline.fact_checker import check as fact_check  # local: optional dep
@@ -471,20 +481,22 @@ def generate(
             for warn in fc_result.warnings:
                 print(f"    ⚠  {warn}")
         if not fc_result.passed:
+            # Keep the draft (it has already cost the generation calls), but keep it OUT
+            # of the queue: the exit is unchanged, so `draft_pipeline` never reaches
+            # `cmd_add`. Recording the failure as a queue field instead would be read as
+            # clear by any consumer guard mirroring an older `recorded_blockers`. The
+            # sidecar is the record of why; nothing is required to read it.
+            kept = ""
+            if not dry_run:
+                sidecar = _write_blocked_draft(out_path, article, fc_result)
+                kept = f"    Draft kept, NOT queued: {out_path}\n    Errors:              {sidecar}\n"
             print(
                 "\n❌  Fact check failed — draft has numerical errors. Do not publish.\n"
+                f"{kept}"
                 "    Fix the brief's key_facts and regenerate.\n",
                 file=sys.stderr,
             )
             sys.exit(1)
-
-    # ── Resolve output path ──────────────────────────────────────────────────
-    if output_path:
-        out_path = Path(output_path)
-        if not out_path.is_absolute():
-            out_path = brand_cfg.brand_dir / output_path
-    else:
-        out_path = _auto_output_path(brief, brand_cfg)
 
     # ── Write output ─────────────────────────────────────────────────────────
     if not dry_run:
@@ -508,6 +520,27 @@ def generate(
             )
 
     return out_path, result
+
+
+def _write_blocked_draft(out_path: Path, article: str, fc_result) -> Path:
+    """Write a draft that failed the fact check, plus a `.fact-check.json` saying why."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(article, encoding="utf-8")
+    sidecar = out_path.with_name(out_path.name + ".fact-check.json")
+    sidecar.write_text(
+        json.dumps(
+            {
+                "passed": False,
+                "blocked": "fact check failed — do not publish or enqueue; regenerate from a fixed brief",
+                "errors": list(fc_result.flags),
+                "warnings": list(fc_result.warnings),
+            },
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return sidecar
 
 
 # ─────────────────────────────────────────────────────────────────────────────

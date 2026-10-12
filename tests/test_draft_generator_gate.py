@@ -312,3 +312,105 @@ class TestGenerate:
             "the retry fixed the headline, so the recorded verdict must reflect the "
             "article that was actually kept:\n" + "\n".join(result.flags)
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The reply is the text block, not content[0]
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestThinkingBlockFirst:
+    def test_the_article_is_read_from_the_text_block(self, stub_brand, monkeypatch):
+        """With adaptive thinking on, content[0] is a thinking block with no `.text`."""
+        stub = _install_stub(monkeypatch, CLEAN_ARTICLE)
+        real_create = stub.create
+
+        def create_with_thinking(**kwargs):
+            response = real_create(**kwargs)
+            text = response.content[0]
+            text.type = "text"
+            response.content = [SimpleNamespace(type="thinking", thinking="reasoning"), text]
+            return response
+
+        stub.create = create_with_thinking
+        brief_path = _write_brief(stub_brand, "A clean topic statement with no dash.")
+
+        _out_path, result = draft_generator.generate(
+            brief_path=str(brief_path), brand_slug="testbrand", verbose=False, dry_run=True
+        )
+
+        assert result.passed, "\n".join(result.flags)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# A failed fact check keeps the draft, out of the queue
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def fact_checking_brand(stub_brand):
+    cfg = {**_BRAND_YAML, "workflow": {**_BRAND_YAML["workflow"], "fact_check": True}}
+    (stub_brand / "brand.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    return stub_brand
+
+
+def _stub_fact_check(monkeypatch, passed: bool):
+    from pipeline import fact_checker
+
+    result = fact_checker.FactCheckResult(
+        passed=passed,
+        flags=[] if passed else ["4.25% should be 4.52%"],
+        warnings=["a figure not in the brief"],
+    )
+    monkeypatch.setattr(fact_checker, "check", lambda *a, **k: result)
+
+
+class TestFactCheckFailure:
+    """The draft has already cost the generation calls; a failed fact check must not lose it.
+
+    It must not reach the queue either. The exit stays 1, so `draft_pipeline` never calls
+    `cmd_add` and no queue field changes meaning for consumers mirroring `recorded_blockers`.
+    """
+
+    def test_the_draft_is_kept_with_a_record_of_why(self, fact_checking_brand, monkeypatch):
+        _install_stub(monkeypatch, CLEAN_ARTICLE)
+        _stub_fact_check(monkeypatch, passed=False)
+        brief_path = _write_brief(fact_checking_brand, "A clean topic statement with no dash.")
+
+        with pytest.raises(SystemExit) as exc:
+            draft_generator.generate(
+                brief_path=str(brief_path), brand_slug="testbrand", verbose=False
+            )
+
+        assert exc.value.code == 1
+        draft = fact_checking_brand / "staging" / "drafts" / "draft-001-v1.md"
+        assert draft.read_text(encoding="utf-8") == CLEAN_ARTICLE
+        record = json.loads(
+            (draft.parent / "draft-001-v1.md.fact-check.json").read_text(encoding="utf-8")
+        )
+        assert record["passed"] is False
+        assert record["errors"] == ["4.25% should be 4.52%"]
+        assert record["warnings"] == ["a figure not in the brief"]
+
+    def test_a_dry_run_still_writes_nothing(self, fact_checking_brand, monkeypatch):
+        _install_stub(monkeypatch, CLEAN_ARTICLE)
+        _stub_fact_check(monkeypatch, passed=False)
+        brief_path = _write_brief(fact_checking_brand, "A clean topic statement with no dash.")
+
+        with pytest.raises(SystemExit) as exc:
+            draft_generator.generate(
+                brief_path=str(brief_path), brand_slug="testbrand", verbose=False, dry_run=True
+            )
+
+        assert exc.value.code == 1
+        assert list((fact_checking_brand / "staging" / "drafts").iterdir()) == []
+
+    def test_a_passing_fact_check_writes_no_record(self, fact_checking_brand, monkeypatch):
+        _install_stub(monkeypatch, CLEAN_ARTICLE)
+        _stub_fact_check(monkeypatch, passed=True)
+        brief_path = _write_brief(fact_checking_brand, "A clean topic statement with no dash.")
+
+        out_path, result = draft_generator.generate(
+            brief_path=str(brief_path), brand_slug="testbrand", verbose=False
+        )
+
+        assert result.passed
+        assert [p.name for p in out_path.parent.iterdir()] == ["draft-001-v1.md"]
