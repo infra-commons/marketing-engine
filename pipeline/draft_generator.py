@@ -48,9 +48,11 @@ from pipeline.publisher import parse_draft_text
 #
 # FLAGSHIP tier, deliberately, against the MID default in
 # infra-commons/meta model-registry.yaml `tier_equivalence:`. Draft prose IS the
-# product here, and MAX_TOKENS below is already sized for opus's denser output.
+# product here.
 MODEL = os.environ.get("MODEL") or "claude-opus-5"
-MAX_TOKENS = 4000  # Opus produces denser output; extra headroom for retry
+# Adaptive thinking counts against this cap on top of a ~2k-token article. The cap bills
+# on tokens used, not on its size — see topic_selector.MAX_TOKENS.
+MAX_TOKENS = 16000
 
 ALL_BANNED = BANNED_PHRASES + LEVERAGE_SYNONYMS + DELVE_SYNONYMS + UNLOCK_SYNONYMS
 

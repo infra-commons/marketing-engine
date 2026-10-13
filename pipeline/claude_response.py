@@ -19,8 +19,7 @@ class NoTextBlockError(RuntimeError):
 def reply_text(response) -> str:
     """The text of the first ``type == "text"`` block. Raises NoTextBlockError if none.
 
-    A block with no ``type`` attribute counts as text, the same reading as
-    ``fact_checker._response_text``; every real SDK block carries one.
+    A block with no ``type`` attribute counts as text; every real SDK block carries one.
     """
     for block in response.content:
         if getattr(block, "type", "text") == "text":

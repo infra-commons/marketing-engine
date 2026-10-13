@@ -97,3 +97,17 @@ def test_a_truncated_response_fails_and_says_so(monkeypatch):
     result = _run(monkeypatch, [_text('{"errors": [')], stop_reason="max_tokens")
     assert not result.passed
     assert "truncated" in result.flags[0]
+
+
+def test_thinking_that_spends_the_whole_cap_fails_as_truncation(monkeypatch):
+    blocks = [SimpleNamespace(type="thinking", thinking="still reasoning")]
+    result = _run(monkeypatch, blocks, stop_reason="max_tokens")
+    assert not result.passed
+    assert "truncated" in result.flags[0]
+
+
+def test_a_reply_with_no_text_block_fails_closed(monkeypatch):
+    blocks = [SimpleNamespace(type="thinking", thinking="reasoning only")]
+    result = _run(monkeypatch, blocks)
+    assert not result.passed
+    assert "unparseable" in result.flags[0]
