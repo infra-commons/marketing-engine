@@ -61,6 +61,12 @@ def brands_dir() -> Path:
 
 DEFAULT_BRAND = "cashbucket"
 
+# Every article type the engine knows. The order matters: a brand that sets no
+# `workflow.article_types` gets this tuple as its allowed list, and the first entry is
+# the fallback for an unrecognised type, so news-reaction must stay first to keep the
+# behaviour such brands had before the key existed.
+VALID_ARTICLE_TYPES = ("news-reaction", "explainer", "how-to", "sector-analysis")
+
 
 @dataclass
 class BrandConfig:
@@ -176,6 +182,61 @@ class BrandConfig:
     @property
     def queue_path(self) -> Path:
         return self.staging_dir / "publish_queue.json"
+
+    @property
+    def article_types_restricted(self) -> bool:
+        """True when the brand limits itself to a subset of article types
+        (`workflow.article_types`). Such a brand's picks are enforced, never relabelled."""
+        return self.workflow.get("article_types") is not None
+
+    @property
+    def allowed_article_types(self) -> tuple[str, ...]:
+        """The article types this brand publishes, first one being its default.
+
+        Unset means every type, in VALID_ARTICLE_TYPES order. A set-but-unusable value
+        (empty, not a list, or naming an unknown type) raises rather than falling back,
+        because a typo here would otherwise silently re-admit the types it was meant to ban.
+        """
+        configured = self.workflow.get("article_types")
+        if configured is None:
+            return VALID_ARTICLE_TYPES
+        if not isinstance(configured, list) or not configured:
+            raise ValueError(
+                f"workflow.article_types for brand '{self.brand}' must be a non-empty list "
+                f"of article types, got {configured!r}"
+            )
+        unknown = [t for t in configured if t not in VALID_ARTICLE_TYPES]
+        if unknown:
+            raise ValueError(
+                f"workflow.article_types for brand '{self.brand}' names unknown type(s) "
+                f"{unknown}; valid types are {list(VALID_ARTICLE_TYPES)}"
+            )
+        return tuple(configured)
+
+    @property
+    def editorial_rules(self) -> list[str]:
+        """Free-text editorial constraints from `workflow.editorial_rules` (default none)."""
+        rules = self.workflow.get("editorial_rules")
+        if rules is None:
+            return []
+        if not isinstance(rules, list) or not all(isinstance(r, str) for r in rules):
+            raise ValueError(
+                f"workflow.editorial_rules for brand '{self.brand}' must be a list of "
+                f"strings, got {rules!r}"
+            )
+        return [r.strip() for r in rules if r.strip()]
+
+    @property
+    def timely_topics(self) -> bool:
+        """Whether topic selection favours a timely angle (`workflow.timely`, default
+        true). Evergreen brands set it false."""
+        timely = self.workflow.get("timely", True)
+        if not isinstance(timely, bool):
+            # A quoted "false" is truthy; refuse it rather than read it as true.
+            raise ValueError(
+                f"workflow.timely for brand '{self.brand}' must be true or false, got {timely!r}"
+            )
+        return timely
 
     def resolve_draft_path(self, relative_path: str) -> Path:
         """Resolve a queue draft_path (relative to brand dir) to an absolute Path."""

@@ -414,3 +414,33 @@ class TestFactCheckFailure:
 
         assert result.passed
         assert [p.name for p in out_path.parent.iterdir()] == ["draft-001-v1.md"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# A brief with no article_type gets the brand's first allowed type
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestArticleTypeDefault:
+    """A brand that bans news-reaction must never be drafted as one by default."""
+
+    PHRASES = {"transitions": ["t"], "openers_list": ["o"], "cta": "c", "close": "x"}
+
+    @staticmethod
+    def _cfg(monkeypatch, **workflow):
+        from pipeline.brand_loader import load_brand
+
+        monkeypatch.setenv("MARKETING_REPO_ROOT", str(Path(__file__).parent / "fixtures"))
+        cfg = load_brand("testbrand")
+        cfg.workflow = {**cfg.workflow, **workflow}
+        return cfg
+
+    def test_unrestricted_brand_defaults_to_news_reaction(self, monkeypatch):
+        prompt = draft_generator._build_generation_prompt(
+            {"topic_statement": "x"}, self.PHRASES, self._cfg(monkeypatch)
+        )
+        assert "## ARTICLE TYPE: news-reaction" in prompt
+
+    def test_restricted_brand_defaults_to_its_first_type(self, monkeypatch):
+        cfg = self._cfg(monkeypatch, article_types=["how-to", "explainer"])
+        prompt = draft_generator._build_generation_prompt({"topic_statement": "x"}, self.PHRASES, cfg)
+        assert "## ARTICLE TYPE: how-to" in prompt

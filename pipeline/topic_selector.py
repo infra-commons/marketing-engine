@@ -1,10 +1,18 @@
 """
 pipeline/topic_selector.py — Trending-topic → brief synthesizer (Tuesday, stage 1)
 
-Stage 1 of the two-stage weekly cadence. Picks a timely topic from the brand's
-trending feeds, then synthesizes a full article brief JSON from it via Claude, so
-the unattended Tuesday run has something topical to draft (rather than a static,
+Stage 1 of the two-stage weekly cadence. Picks a topic from the brand's trending
+feeds, then synthesizes a full article brief JSON from it via Claude, so the
+unattended Tuesday run has something topical to draft (rather than a static,
 pre-canned choice).
+
+Brand editorial rules (all optional, under `workflow:` in brand.yaml; leaving them
+out keeps the original behaviour):
+  - `article_types: [how-to, explainer]` limits the brief's article_type. A pick
+    outside the list is re-picked once, then fails the run (exit 4); it is never
+    relabelled.
+  - `editorial_rules: ["...", ...]` are passed to the model as hard constraints.
+  - `timely: false` swaps the "timely angle" framing for an evergreen one.
 
 Explainable + overridable by design (the DoD's "not fully opaque" requirement):
   - Feeds are a human-controlled list in brand.yaml (`topic_feeds:`); a sensible
@@ -37,6 +45,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pipeline.brand_loader import DEFAULT_BRAND, BrandConfig, load_brand
+from pipeline.brand_loader import VALID_ARTICLE_TYPES  # noqa: F401 (moved to brand_loader; still importable here)
 from pipeline.claude_response import reply_text
 from pipeline.publisher import truncate_description
 
@@ -52,8 +61,6 @@ DEFAULT_FEEDS = [
     "https://news.google.com/rss/search?q=New+Zealand+small+business+when:14d&hl=en-NZ&gl=NZ&ceid=NZ:en",
     "https://news.google.com/rss/search?q=New+Zealand+SME+economy+OR+tax+OR+cashflow+when:14d&hl=en-NZ&gl=NZ&ceid=NZ:en",
 ]
-
-VALID_ARTICLE_TYPES = ("news-reaction", "explainer", "how-to", "sector-analysis")
 
 # Output token cap for the brief-synthesis call. The model thinks adaptively by default
 # and thinking counts against this cap, so it must hold the reasoning as well as the
@@ -249,7 +256,13 @@ def _synthesis_prompt(cfg: BrandConfig, candidates: list[dict], override_topic: 
             f"  TOPIC: {override_topic}\n"
         )
     else:
-        lines = ["Pick the single BEST candidate for a timely SME article, then write its brief.\n"]
+        if cfg.timely_topics:
+            lines = ["Pick the single BEST candidate for a timely SME article, then write its brief.\n"]
+        else:
+            lines = [
+                "Pick the single BEST candidate to prompt an evergreen SME article, then write "
+                "its brief.\n"
+            ]
         lines.append("CANDIDATE HEADLINES (freshest-first):")
         for i, c in enumerate(candidates):
             lines.append(f"  [{i}] {c['title']}")
@@ -259,6 +272,26 @@ def _synthesis_prompt(cfg: BrandConfig, candidates: list[dict], override_topic: 
                 lines.append(f"       source: {c['link']}")
         source_block = "\n".join(lines)
 
+    if cfg.timely_topics:
+        angle_guidance = (
+            "Prefer a\ntimely angle with real downstream consequences for cash, margin, tax, or operations."
+        )
+    else:
+        angle_guidance = (
+            "Prefer an\nevergreen angle: a lasting question an SME owner has about cash, margin, tax, or\n"
+            "operations, which stays useful long after the news cycle. Treat a headline only as a\n"
+            "prompt for that question; do not write a reaction to the news event itself."
+        )
+
+    rules = cfg.editorial_rules
+    rules_block = ""
+    if rules:
+        rules_block = (
+            "\nEDITORIAL RULES (hard constraints — a brief that breaks one is rejected):\n"
+            + "\n".join(f"  - {r}" for r in rules)
+            + "\n"
+        )
+
     return f"""You are the editorial lead for {cfg.display_name}, which publishes for {cfg.platform_description}.
 
 {source_block}
@@ -266,15 +299,14 @@ def _synthesis_prompt(cfg: BrandConfig, candidates: list[dict], override_topic: 
 Produce ONE article brief as a single JSON object and OUTPUT ONLY THE JSON (no prose, no code fences).
 
 Choose the candidate (or use the supplied topic) most relevant to a New Zealand SME
-audience and most likely to make a genuinely useful, non-generic article. Prefer a
-timely angle with real downstream consequences for cash, margin, tax, or operations.
-
+audience and most likely to make a genuinely useful, non-generic article. {angle_guidance}
+{rules_block}
 The JSON MUST have exactly these keys:
 - "brief_id": leave as "PENDING" (the caller assigns the real id)
 - "created_at": "{date.today()}"
 - "status": "auto-generated"
 - "topic_statement": one or two sentences framing the specific NZ SME angle
-- "article_type": one of {list(VALID_ARTICLE_TYPES)}
+- "article_type": one of {list(cfg.allowed_article_types)}
 - "target_audience": who this is for (specific NZ SME segments)
 - "key_facts": a list of 2-4 objects, each {{"fact": "...", "source": "https://..."}} — use
   REAL, verifiable NZ sources (RBNZ, IRD, Stats NZ, MBIE, Privacy Commissioner, the linked
@@ -293,6 +325,12 @@ The JSON MUST have exactly these keys:
 - "selection_rationale": one sentence explaining why this candidate was chosen over the others
 
 Output the JSON now."""
+
+
+class EditorialRuleError(RuntimeError):
+    """The model's brief broke the brand's editorial rules (an article_type outside
+    `workflow.article_types`) even after one re-pick. The run must fail rather than
+    relabel the brief, because a wrong type usually means a wrong topic."""
 
 
 class TruncatedResponseError(RuntimeError):
@@ -333,14 +371,8 @@ def _extract_json(text: str) -> dict:
         raise
 
 
-def synthesize_brief(
-    cfg: BrandConfig,
-    candidates: list[dict],
-    override_topic: str | None,
-    api_key: str,
-) -> dict:
-    """Call Claude to select a candidate (or use the override) and return a brief dict."""
-    prompt = _synthesis_prompt(cfg, candidates, override_topic)
+def _generate(prompt: str, api_key: str) -> dict:
+    """One model call for a brief, retried once at a higher cap after a truncation."""
     try:
         raw = _call_claude(prompt, api_key)
     except TruncatedResponseError as e:
@@ -349,15 +381,56 @@ def synthesize_brief(
             file=sys.stderr,
         )
         raw = _call_claude(prompt, api_key, max_tokens=RETRY_MAX_TOKENS)
-    brief = _extract_json(raw)
+    return _extract_json(raw)
+
+
+def _repick_note(rejected, allowed: tuple[str, ...]) -> str:
+    return (
+        f"\n\nYOUR PREVIOUS ANSWER WAS REJECTED: it used article_type {json.dumps(rejected)}, "
+        f"which this brand does not publish. Choose again. The article_type MUST be one of "
+        f"{list(allowed)}; if a candidate only works as another type, pick a different "
+        f"candidate or angle. Output only the JSON."
+    )
+
+
+def synthesize_brief(
+    cfg: BrandConfig,
+    candidates: list[dict],
+    override_topic: str | None,
+    api_key: str,
+) -> dict:
+    """Call Claude to select a candidate (or use the override) and return a brief dict."""
+    allowed = cfg.allowed_article_types  # raises on a malformed brand config, before any call
+    prompt = _synthesis_prompt(cfg, candidates, override_topic)
+    brief = _generate(prompt, api_key)
+
+    at = brief.get("article_type")
+    if at not in allowed:
+        if cfg.article_types_restricted:
+            # Re-pick once, telling the model what it got wrong. Never relabel: on a
+            # brand that bans a type, the label is the only sign the topic is wrong.
+            print(
+                f"⚠  Brief used article_type {at!r}, which {cfg.display_name} does not "
+                f"publish (allowed: {list(allowed)}). Re-picking once…",
+                file=sys.stderr,
+            )
+            brief = _generate(prompt + _repick_note(at, allowed), api_key)
+            at = brief.get("article_type")
+            if at not in allowed:
+                raise EditorialRuleError(
+                    f"the model chose article_type {at!r} on both attempts, outside "
+                    f"{cfg.display_name}'s allowed types {list(allowed)} "
+                    f"(workflow.article_types in brand.yaml); no brief was written."
+                )
+        else:
+            # Unrestricted brand: an unrecognised label falls back to the first allowed
+            # type, which for these brands is news-reaction, as it always was.
+            brief["article_type"] = allowed[0]
 
     # Normalise / harden the model output.
     brief["brief_id"] = _next_brief_id(cfg)
     brief.setdefault("created_at", str(date.today()))
     brief.setdefault("status", "auto-generated")
-    at = brief.get("article_type")
-    if at not in VALID_ARTICLE_TYPES:
-        brief["article_type"] = "news-reaction"
     brief["dates_verified"] = False  # auto-generated → never pre-verified
     brief.setdefault("slug", _slugify(brief.get("topic_statement", brief["brief_id"])))
     # Word-boundary truncation, not a bare slice: this value is copied into the publish
@@ -386,6 +459,13 @@ def select_and_write(
     Returns the brief dict (with an added 'brief_path' key when written).
     """
     cfg = load_brand(brand_slug)
+    try:
+        # Read the editorial keys now, so a malformed one fails before any feed fetch
+        # or model call rather than partway through.
+        _ = (cfg.allowed_article_types, cfg.editorial_rules, cfg.timely_topics)
+    except ValueError as e:
+        print(f"❌  Invalid editorial config in brand.yaml: {e}", file=sys.stderr)
+        sys.exit(4)
     # CB_ANTHROPIC_API_KEY takes precedence when set — it bills the subscription; the
     # plain name bills the Anthropic API directly. Same precedence as fact_checker.py.
     api_key = os.environ.get("CB_ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
@@ -414,6 +494,9 @@ def select_and_write(
     except TruncatedResponseError as e:
         print(f"❌  Brief synthesis failed: {e}", file=sys.stderr)
         sys.exit(3)
+    except EditorialRuleError as e:
+        print(f"❌  Brief rejected by the brand's editorial rules: {e}", file=sys.stderr)
+        sys.exit(4)
     except json.JSONDecodeError as e:
         print(
             f"❌  Brief synthesis failed: model response was not valid JSON ({e}). "
