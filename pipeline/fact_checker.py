@@ -38,10 +38,13 @@ import anthropic
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from pipeline.brand_loader import DEFAULT_BRAND, load_brand
+from pipeline.claude_response import NoTextBlockError, reply_text
 
 MODEL = "claude-sonnet-5"
-# Headroom for a report the model prefixes with reasoning; a cut-off report cannot parse.
-MAX_TOKENS = 4096
+# Headroom for adaptive thinking (which counts against this cap) plus a report the model
+# may prefix with reasoning; a cut-off report cannot parse. The cap bills on tokens used,
+# not on its size — see topic_selector.MAX_TOKENS.
+MAX_TOKENS = 16000
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -142,13 +145,6 @@ If everything checks out, return {{"errors": [], "warnings": []}}.
 # Response parsing
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _response_text(response) -> str:
-    """Join the text blocks. content[0] may be a thinking block, not the reply."""
-    return "".join(
-        getattr(b, "text", "") for b in response.content if getattr(b, "type", "text") == "text"
-    ).strip()
-
-
 def _extract_json(raw: str) -> dict | None:
     """The report object, even when the model wraps it in prose or a code fence."""
     decoder = json.JSONDecoder()
@@ -218,7 +214,11 @@ def check(
         messages=[{"role": "user", "content": prompt}],
     )
 
-    raw = _response_text(response)
+    try:
+        raw = reply_text(response)
+    except NoTextBlockError:
+        # Thinking spent the whole cap. The checks below fail closed on an empty reply.
+        raw = ""
 
     if getattr(response, "stop_reason", None) == "max_tokens":
         return FactCheckResult(

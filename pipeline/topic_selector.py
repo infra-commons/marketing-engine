@@ -55,12 +55,17 @@ DEFAULT_FEEDS = [
 
 VALID_ARTICLE_TYPES = ("news-reaction", "explainer", "how-to", "sector-analysis")
 
-# Output token cap for the brief-synthesis call. RETRY_MAX_TOKENS is used only for the
-# one retry after a confirmed truncation (stop_reason == "max_tokens"), so the common
-# case's cost is unchanged and the bump is evidence-gated rather than a blind raise of
-# the ceiling — see infra-commons/marketing-engine#22.
-MAX_TOKENS = 2000
-RETRY_MAX_TOKENS = 4000
+# Output token cap for the brief-synthesis call. The model thinks adaptively by default
+# and thinking counts against this cap, so it must hold the reasoning as well as the
+# JSON: at 2000 every run truncated before the brief was written
+# (cashbucket-com/marketing#330). The cap bills on tokens used, not on its size, so the
+# headroom costs nothing. Thinking stays on rather than disabled because MODEL is
+# env-overridable and thinking={"type": "disabled"} is a 400 on newer models.
+# RETRY_MAX_TOKENS is used only for the one retry after a confirmed truncation
+# (stop_reason == "max_tokens") — see infra-commons/marketing-engine#22. Both stay under
+# the SDK's ~21k cap for non-streaming requests.
+MAX_TOKENS = 8000
+RETRY_MAX_TOKENS = 16000
 
 # Words too generic to signal topic overlap on their own.
 _STOPWORDS = {
