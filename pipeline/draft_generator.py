@@ -160,7 +160,9 @@ OUTPUT FORMAT: Output ONLY the article in markdown. No preamble. No "Here is the
 def _build_generation_prompt(brief: dict, phrases: dict, brand_cfg: BrandConfig) -> str:
     """Per-article user prompt. Includes brief, phrase bank selections, and instructions."""
     brief_json = json.dumps(brief, indent=2)
-    article_type = brief.get("article_type", "news-reaction")
+    # A brief with no type gets the brand's first allowed type: news-reaction for a brand
+    # that sets no workflow.article_types, never a type the brand has banned.
+    article_type = brief.get("article_type") or brand_cfg.allowed_article_types[0]
     analysis_instruction = ANALYSIS_INSTRUCTIONS.get(
         article_type,
         "Provide specific, actionable analysis relevant to NZ SMEs. Commit to a view."

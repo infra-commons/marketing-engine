@@ -136,6 +136,21 @@ python3 -m pipeline.draft_pipeline --brand <slug>
    Google-News RSS); every run logs the candidates + rationale to
    `staging/topics/topic-<date>.json`; an operator can override with `--topic "…"`,
    swap feeds with `--feeds url,url`, or reuse an existing brief with `--brief brief-011`.
+
+   A brand can set editorial rules under `workflow:`. All three keys are optional, and
+   leaving them out keeps the behaviour above:
+
+   ```yaml
+   workflow:
+     article_types: [how-to, explainer]   # the only types a brief may have; the first is the default
+     editorial_rules:                      # hard constraints, passed to the model as written
+       - "SME-finance how-tos and explainers only; no news-reaction pieces"
+     timely: false                         # evergreen framing instead of "pick a timely angle"
+   ```
+
+   With `article_types` set, a brief of any other type is re-picked once and then fails
+   the run (exit 4). It is never relabelled. An unknown type in the list, an empty
+   list, or a quoted `timely: "false"` fails the run before any feed is fetched.
 2. **Draft generation** (`pipeline.draft_generator`) — writes a gated draft to `staging/drafts/`.
 3. **Enqueue held** (`queue_manager add`) — registers the draft as `status: "queued"`.
    A `queued` item is **not publishable** (see the gate below).

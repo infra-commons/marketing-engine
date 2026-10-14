@@ -255,3 +255,132 @@ class TestSelectAndWriteTruncationIsLoud:
             topic_selector.select_and_write(brand, override_topic="some topic", verbose=False)
         assert exc_info.value.code == 3
         assert "truncat" in capsys.readouterr().err.lower()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Brand editorial rules (workflow.article_types / editorial_rules / timely)
+#
+# A brand that bans a type must never receive it: cashbucket-com/marketing#332 got a
+# news-reaction brief because the prompt offered every type, asked for a "timely" pick,
+# and relabelled any unrecognised type as news-reaction. Brands that set none of the
+# keys must behave exactly as before.
+# ─────────────────────────────────────────────────────────────────────────────
+
+EVERGREEN = {
+    "article_types": ["how-to", "explainer"],
+    "editorial_rules": ["SME-finance how-tos and explainers only; no news-reaction pieces"],
+    "timely": False,
+}
+
+
+def _set_workflow(brand_slug, **keys):
+    cfg = load_brand(brand_slug)
+    data = yaml.safe_load((cfg.brand_dir / "brand.yaml").read_text(encoding="utf-8"))
+    data["workflow"].update(keys)
+    (cfg.brand_dir / "brand.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+
+
+@pytest.fixture
+def evergreen_brand(brand):
+    _set_workflow(brand, **EVERGREEN)
+    return brand
+
+
+def _scripted_claude(monkeypatch, *replies):
+    """Patch _call_claude to return replies in order; returns the prompts it was sent."""
+    prompts = []
+
+    def fake(prompt, key, max_tokens=topic_selector.MAX_TOKENS):
+        prompts.append(prompt)
+        return replies[len(prompts) - 1]
+
+    monkeypatch.setattr(topic_selector, "_call_claude", fake)
+    return prompts
+
+
+def _reply(article_type):
+    return f'{{"topic_statement": "X", "article_type": "{article_type}", "angle": "a"}}'
+
+
+CANDS = [{"title": "Opposition releases 47-point plan", "summary": "", "link": "https://n.test/p"}]
+
+
+class TestEditorialPrompt:
+    def test_unconfigured_brand_offers_every_type_and_a_timely_pick(self, brand):
+        prompt = topic_selector._synthesis_prompt(load_brand(brand), CANDS, None)
+        assert str(list(topic_selector.VALID_ARTICLE_TYPES)) in prompt
+        assert "timely SME article" in prompt
+        assert "timely angle" in prompt
+        assert "EDITORIAL RULES" not in prompt
+
+    def test_restricted_brand_offers_only_its_types_and_its_rules(self, evergreen_brand):
+        prompt = topic_selector._synthesis_prompt(load_brand(evergreen_brand), CANDS, None)
+        assert "one of ['how-to', 'explainer']" in prompt
+        assert "'news-reaction'" not in prompt  # never offered as a type
+        assert "EDITORIAL RULES" in prompt
+        assert "no news-reaction pieces" in prompt
+
+    def test_timely_false_drops_the_timely_framing(self, evergreen_brand):
+        cfg = load_brand(evergreen_brand)
+        for prompt in (
+            topic_selector._synthesis_prompt(cfg, CANDS, None),
+            topic_selector._synthesis_prompt(cfg, [], "operator topic"),
+        ):
+            assert "timely" not in prompt.lower()
+            assert "evergreen" in prompt
+
+
+class TestEditorialValidation:
+    def test_allowed_pick_needs_one_call(self, evergreen_brand, monkeypatch):
+        prompts = _scripted_claude(monkeypatch, _reply("how-to"))
+        brief = topic_selector.synthesize_brief(load_brand(evergreen_brand), CANDS, None, api_key="k")
+        assert brief["article_type"] == "how-to"
+        assert len(prompts) == 1
+
+    def test_banned_pick_is_repicked_with_the_reason(self, evergreen_brand, monkeypatch):
+        prompts = _scripted_claude(monkeypatch, _reply("news-reaction"), _reply("explainer"))
+        brief = topic_selector.synthesize_brief(load_brand(evergreen_brand), CANDS, None, api_key="k")
+        assert brief["article_type"] == "explainer"
+        assert len(prompts) == 2
+        assert prompts[1].startswith(prompts[0])
+        assert "REJECTED" in prompts[1] and '"news-reaction"' in prompts[1]
+
+    def test_unrecognised_pick_is_repicked_not_relabelled(self, evergreen_brand, monkeypatch):
+        # The re-pick answers "explainer", not the first allowed type, so a relabel
+        # (which would yield "how-to") cannot pass this test.
+        prompts = _scripted_claude(monkeypatch, _reply("bogus"), _reply("explainer"))
+        brief = topic_selector.synthesize_brief(load_brand(evergreen_brand), [], "t", api_key="k")
+        assert brief["article_type"] == "explainer"
+        assert len(prompts) == 2
+
+    def test_two_banned_picks_raise(self, evergreen_brand, monkeypatch):
+        _scripted_claude(monkeypatch, _reply("news-reaction"), _reply("bogus"))
+        with pytest.raises(topic_selector.EditorialRuleError):
+            topic_selector.synthesize_brief(load_brand(evergreen_brand), CANDS, None, api_key="k")
+
+    def test_unconfigured_brand_still_falls_back_to_news_reaction(self, brand, monkeypatch):
+        prompts = _scripted_claude(monkeypatch, _reply("bogus"))
+        brief = topic_selector.synthesize_brief(load_brand(brand), [], "t", api_key="k")
+        assert brief["article_type"] == "news-reaction"
+        assert len(prompts) == 1  # no re-pick for a brand that set no rules
+
+    def test_select_and_write_fails_loudly_and_writes_nothing(
+        self, evergreen_brand, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+        _scripted_claude(monkeypatch, _reply("news-reaction"), _reply("news-reaction"))
+        with pytest.raises(SystemExit) as exc_info:
+            topic_selector.select_and_write(evergreen_brand, override_topic="t", verbose=False)
+        assert exc_info.value.code == 4
+        assert "editorial rules" in capsys.readouterr().err
+        assert list(load_brand(evergreen_brand).briefs_dir.glob("brief-*.json")) == []
+
+    def test_bad_config_fails_before_any_model_call(self, brand, monkeypatch, capsys):
+        _set_workflow(brand, article_types=["how-to", "listicle"])
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+        prompts = _scripted_claude(monkeypatch)
+        with pytest.raises(SystemExit) as exc_info:
+            topic_selector.select_and_write(brand, override_topic="t", verbose=False)
+        assert exc_info.value.code == 4
+        assert "listicle" in capsys.readouterr().err
+        assert prompts == []

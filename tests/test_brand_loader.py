@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pipeline.brand_loader import (  # noqa: E402
     ENGINE_ROOT,
+    VALID_ARTICLE_TYPES,
     _validate_site_subpath,
     brands_dir,
     consumer_root,
@@ -88,3 +89,48 @@ class TestValidateSiteSubpath:
     def test_rejects_absolute_path(self):
         with pytest.raises(ValueError, match="no leading '/'"):
             _validate_site_subpath("assets_path", "/etc/passwd")
+
+
+class TestEditorialConfig:
+    """workflow.article_types / editorial_rules / timely — all optional, and a brand
+    that sets none of them keeps the behaviour it had before they existed."""
+
+    @staticmethod
+    def _cfg(monkeypatch, **workflow):
+        monkeypatch.setenv("MARKETING_REPO_ROOT", str(Path(__file__).parent / "fixtures"))
+        cfg = load_brand("testbrand")
+        cfg.workflow = {**cfg.workflow, **workflow}
+        return cfg
+
+    def test_unset_keys_keep_the_old_defaults(self, monkeypatch):
+        cfg = self._cfg(monkeypatch)
+        assert cfg.allowed_article_types == VALID_ARTICLE_TYPES
+        assert cfg.allowed_article_types[0] == "news-reaction"
+        assert cfg.article_types_restricted is False
+        assert cfg.editorial_rules == []
+        assert cfg.timely_topics is True
+
+    def test_configured_keys_are_read(self, monkeypatch):
+        cfg = self._cfg(
+            monkeypatch,
+            article_types=["how-to", "explainer"],
+            editorial_rules=["no news", "  "],
+            timely=False,
+        )
+        assert cfg.allowed_article_types == ("how-to", "explainer")
+        assert cfg.article_types_restricted is True
+        assert cfg.editorial_rules == ["no news"]
+        assert cfg.timely_topics is False
+
+    @pytest.mark.parametrize("bad", [[], "how-to", ["how-to", "listicle"]])
+    def test_unusable_article_types_raise(self, monkeypatch, bad):
+        with pytest.raises(ValueError, match="article_types"):
+            self._cfg(monkeypatch, article_types=bad).allowed_article_types
+
+    def test_editorial_rules_must_be_a_list_of_strings(self, monkeypatch):
+        with pytest.raises(ValueError, match="editorial_rules"):
+            self._cfg(monkeypatch, editorial_rules="no news").editorial_rules
+
+    def test_quoted_timely_is_refused_not_read_as_true(self, monkeypatch):
+        with pytest.raises(ValueError, match="timely"):
+            self._cfg(monkeypatch, timely="false").timely_topics
