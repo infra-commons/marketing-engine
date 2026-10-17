@@ -40,7 +40,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from pipeline.brand_loader import DEFAULT_BRAND, load_brand
 from pipeline.claude_response import NoTextBlockError, reply_text
 
-MODEL = "claude-sonnet-5"
+MODEL = "claude-sonnet-5-5"
 # Headroom for adaptive thinking (which counts against this cap) plus a report the model
 # may prefix with reasoning; a cut-off report cannot parse. The cap bills on tokens used,
 # not on its size — see topic_selector.MAX_TOKENS.

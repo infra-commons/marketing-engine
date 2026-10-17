@@ -308,6 +308,9 @@ class TestGenerate:
         )
 
         assert len(stub.calls) == 2
+        assert all(c["output_config"] == {"effort": "high"} for c in stub.calls), (
+            "both calls pin effort; Opus 5.5 would otherwise draft at its medium default"
+        )
         assert result.passed, (
             "the retry fixed the headline, so the recorded verdict must reflect the "
             "article that was actually kept:\n" + "\n".join(result.flags)
