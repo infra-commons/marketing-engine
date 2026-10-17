@@ -8,7 +8,7 @@ Flow:
   2. Load brief JSON
   3. Select from phrase banks (opener, transitions, CTA, close)
   4. Build prompt with: brief, article spine, phrase selections, structural rules
-  5. Call Claude API (claude-opus-5) with prompt caching on the system prompt
+  5. Call Claude API (claude-opus-5-5) with prompt caching on the system prompt
   6. Run compliance gate on output
   7. If gate fails, retry once with targeted fix instructions
   8. Write to brands/{brand}/staging/review/draft-XXX-v1.md (or next version)
@@ -44,15 +44,18 @@ from pipeline.publisher import parse_draft_text
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Default model is opus; a consumer can override per-run via the MODEL env var
-# (e.g. a brand that runs on a cheaper tier sets MODEL=claude-sonnet-5).
+# (e.g. a brand that runs on a cheaper tier sets MODEL=claude-sonnet-5-5).
 #
 # FLAGSHIP tier, deliberately, against the MID default in
 # infra-commons/meta model-registry.yaml `tier_equivalence:`. Draft prose IS the
 # product here.
-MODEL = os.environ.get("MODEL") or "claude-opus-5"
+MODEL = os.environ.get("MODEL") or "claude-opus-5-5"
 # Adaptive thinking counts against this cap on top of a ~2k-token article. The cap bills
 # on tokens used, not on its size — see topic_selector.MAX_TOKENS.
 MAX_TOKENS = 16000
+# Opus 5.5 defaults to medium effort (Opus 5 defaulted to high). Draft prose is the
+# product, so pin high rather than inherit the lower default.
+EFFORT = "high"
 
 ALL_BANNED = BANNED_PHRASES + LEVERAGE_SYNONYMS + DELVE_SYNONYMS + UNLOCK_SYNONYMS
 
@@ -380,6 +383,7 @@ def generate(
     response = client.messages.create(
         model=MODEL,
         max_tokens=MAX_TOKENS,
+        output_config={"effort": EFFORT},
         system=[
             {
                 "type": "text",
@@ -425,6 +429,7 @@ def generate(
         retry_response = client.messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
+            output_config={"effort": EFFORT},
             system=[
                 {
                     "type": "text",
