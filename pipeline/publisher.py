@@ -925,12 +925,40 @@ def update_sitemap(site_path: Path, slug: str, pub_date: str, brand_cfg: BrandCo
     print(f"  ✓ sitemap.xml updated → {article_loc}")
 
 
-def git_push_site(site_path: Path, slug: str, brand_cfg: BrandConfig, dry_run: bool = False) -> None:
-    """Commit article to a publish branch and open a PR with auto-merge."""
+def checkout_site_base(site_path: Path, slug: str, brand_cfg: BrandConfig) -> None:
+    """Put the site checkout on publish/<slug>, cut fresh from origin/<base>.
+
+    Runs before anything reads or writes the site tree. Branching from whatever the
+    checkout had checked out shipped a staging branch's unrelated work to prod, and the
+    article index and sitemap are edited in place, so they must be the base's copies.
+    """
     token = _get_gh_token(brand_cfg)
     if token:
         remote_url = f"https://{brand_cfg.brand}-bot:{token}@github.com/{brand_cfg.site_repo}.git"
         _run(["git", "remote", "set-url", "origin", remote_url], cwd=site_path)
+
+    # A modified tracked file would ride along onto the new branch, and articles.html
+    # or the sitemap would then be staged with someone else's edits in it.
+    dirty = _run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=site_path)
+    if dirty.stdout.strip():
+        raise RuntimeError(
+            f"site checkout {site_path} has uncommitted changes to tracked files:\n"
+            f"{dirty.stdout.rstrip()}"
+        )
+
+    base = brand_cfg.site_base_branch
+    _run(["git", "fetch", "origin", base], cwd=site_path)
+    # -B, not -b: a re-run after a failed attempt resets the branch instead of failing.
+    _run(["git", "checkout", "-B", f"publish/{slug}", f"origin/{base}"], cwd=site_path)
+    print(f"  ✓ Site checkout on publish/{slug} from origin/{base}")
+
+
+def git_push_site(site_path: Path, slug: str, brand_cfg: BrandConfig, dry_run: bool = False) -> None:
+    """Commit article to the publish branch and open a PR with auto-merge.
+
+    Expects checkout_site_base to have put the checkout on publish/<slug>.
+    """
+    token = _get_gh_token(brand_cfg)
 
     files_to_stage = [
         f"{brand_cfg.articles_path}/{slug}.html",
@@ -954,7 +982,6 @@ def git_push_site(site_path: Path, slug: str, brand_cfg: BrandConfig, dry_run: b
     _run(["git", "config", "user.email", f"bot@{brand_cfg.site_url.lstrip('https://')}"], cwd=site_path)
 
     branch = f"publish/{slug}"
-    _run(["git", "checkout", "-b", branch], cwd=site_path)
 
     commit_msg = f"publish: {slug}\n\nPublished via content-engine pipeline/publisher.py"
     _run(["git", "commit", "-m", commit_msg], cwd=site_path)
@@ -975,7 +1002,7 @@ def git_push_site(site_path: Path, slug: str, brand_cfg: BrandConfig, dry_run: b
          "--repo", brand_cfg.site_repo,
          "--title", f"publish: {slug}",
          "--body", "Published via content-engine pipeline/publisher.py",
-         "--base", "main",
+         "--base", brand_cfg.site_base_branch,
          "--head", branch],
         cwd=site_path,
         env=gh_env,
@@ -999,7 +1026,13 @@ def git_push_site(site_path: Path, slug: str, brand_cfg: BrandConfig, dry_run: b
     if merge.returncode == 0:
         print("  ✓ PR created and auto-merge enabled — article will deploy once checks pass.")
     else:
-        print("  ✓ PR created — auto-merge not available on staging, merge manually.")
+        # gh's own reason, whatever it is: the old fixed "not available on staging" text
+        # printed for every failure and hid the real one.
+        reason = (merge.stderr.strip() or merge.stdout.strip() or f"exit {merge.returncode}")
+        print(
+            f"  ✓ PR created against {brand_cfg.site_base_branch} — auto-merge not enabled "
+            f"({reason}); merge manually."
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1211,6 +1244,17 @@ def main() -> int:
     print(f"  Slug: {slug}")
     print(f"  Description: {truncate_description(description, 80)}")
     print(f"  Read time: {mins} min")
+
+    # ── 3a. Site checkout onto origin/<base> ──────────────────────────────────
+    # Before the first site read: every check and edit below must see the base's tree.
+    try:
+        checkout_site_base(site_path, slug, brand_cfg)
+    except subprocess.CalledProcessError as e:
+        print(f"  ERROR during git operation:\n  {e.stderr}", file=sys.stderr)
+        return 1
+    except RuntimeError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
 
     # ── 3b. Title duplicate check ─────────────────────────────────────────────
     existing = _find_duplicate_title(title, site_path, brand_cfg)
