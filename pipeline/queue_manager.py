@@ -16,6 +16,13 @@ Usage (``<brand>`` is a workspace under brands/):
     # Return a pending_review/hold entry to the cadence (clears its stale verdict)
     python3 -m pipeline.queue_manager requeue <slug> --brand <brand>
 
+    # Take an entry out of the cadence, with a recorded reason
+    python3 -m pipeline.queue_manager hold <slug> --reason '<why>' --brand <brand>
+    python3 -m pipeline.queue_manager reject <slug> --reason '<why>' --brand <brand>
+
+    # Enqueue a draft and approve it in the same call when its recorded verdict is clean
+    python3 -m pipeline.queue_manager add <draft_path> --slug <slug> --approve-if-clean --brand <brand>
+
 An entry carries a recorded verdict — ``gate_passed``, ``dates_verified``, ``gate_stale``
 — and ``pipeline.queue_policy`` is the single predicate that reads it. See that module for
 why absence is not failure and why an override must carry a written reason.
@@ -295,8 +302,29 @@ def cmd_add(args: argparse.Namespace) -> int:
     else:
         entry["dates_verified"] = bool(brief.get("dates_verified", False))
 
+    # `--approve-if-clean`: approve in the same call, for a brand whose sign-off happens
+    # elsewhere (a PR merge). Decided from the verdict just recorded, through the same
+    # predicate `approve` uses, so there is no second route to `approved`. Stricter than a
+    # human `approve` on one point: an unrecorded `dates_verified` (no brief) is not clean,
+    # because nobody is present to have looked.
+    held_back: list[str] = []
+    if getattr(args, "approve_if_clean", False):
+        held_back = recorded_blockers(entry)
+        if entry.get("dates_verified") is not True and not held_back:
+            held_back = ["no brief was found, so nothing recorded that its figures were verified"]
+        if not held_back:
+            entry["status"] = "approved"
+            entry["approved_by"] = _approver()
+            entry["approved_at"] = _utc_stamp()
+
     queue.append(entry)
     save_queue(args.brand, queue)
+
+    if entry["status"] == "approved":
+        print(f"Queued and approved (verdict clean): {entry['slug'] or target}")
+        return 0
+    for reason in held_back:
+        print(f"  ⚠ not auto-approved: {reason}")
 
     gate_note = "  ⚠ compliance gate FAILED — review carefully" if entry.get("gate_passed") is False else ""
     print(f"Queued (held, needs approval): {entry['slug'] or target}{gate_note}")
@@ -482,6 +510,58 @@ def cmd_requeue(args: argparse.Namespace) -> int:
     return 1
 
 
+def _set_status_with_reason(args: argparse.Namespace, status: str, allowed_from: tuple[str, ...]) -> int:
+    """Move an entry to `status`, stamping who, when and why as `<prefix>_by/_at/_reason`.
+
+    `hold` and `rejected` had readers (status, the dashboard, requeue) and no writer but a
+    hand edit, so the queue could say an article was held without saying by whom or why.
+    The reason is required for the same reason an override's is: a status change with no
+    written reason looks like an audit trail without being one.
+    """
+    reason = (getattr(args, "reason", "") or "").strip()
+    if not reason:
+        print(f"ERROR: --reason is required to set '{status}'.", file=sys.stderr)
+        return 1
+
+    queue = load_queue(args.brand)
+    slug = args.slug
+    item = next((q for q in queue if q.get("slug") == slug or q.get("draft_path") == slug), None)
+    if item is None:
+        print(f"ERROR: No queue item found with slug='{slug}'", file=sys.stderr)
+        return 1
+
+    current = item.get("status")
+    if current == status:
+        print(f"Already {status}: {slug}")
+        return 0
+    if current not in allowed_from:
+        print(
+            f"ERROR: Cannot set '{slug}' to '{status}' — status is '{current}' "
+            f"(must be one of: {', '.join(allowed_from)}).",
+            file=sys.stderr,
+        )
+        return 1
+
+    prefix = "held" if status == "hold" else status
+    item["status"] = status
+    item[f"{prefix}_by"] = _approver()
+    item[f"{prefix}_at"] = _utc_stamp()
+    item[f"{prefix}_reason"] = reason
+    save_queue(args.brand, queue)
+    print(f"Set to {status} (was '{current}'): {slug}")
+    return 0
+
+
+def cmd_hold(args: argparse.Namespace) -> int:
+    """Take an entry out of the cadence without discarding it: -> hold. `requeue` undoes it."""
+    return _set_status_with_reason(args, "hold", ("queued", "approved", "pending_review"))
+
+
+def cmd_reject(args: argparse.Namespace) -> int:
+    """Discard an entry: -> rejected. Terminal; `requeue` does not accept it."""
+    return _set_status_with_reason(args, "rejected", ("queued", "approved", "pending_review", "hold"))
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     queue = load_queue(args.brand)
     cfg = load_brand(args.brand)
@@ -495,6 +575,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     approved = sum(1 for q in queue if q.get("status") == "approved")
     pending = sum(1 for q in queue if q.get("status") == "pending_review")
     on_hold = sum(1 for q in queue if q.get("status") == "hold")
+    rejected = sum(1 for q in queue if q.get("status") == "rejected")
 
     print(f"\n{cfg.display_name} publish queue: {published}/{total} published")
     blocked = sum(1 for q in queue if recorded_blockers(q))
@@ -506,6 +587,9 @@ def cmd_status(args: argparse.Namespace) -> int:
         # a status-model brand with entries stranded at `pending_review` was told nothing
         # about them at all — the one place that counted them never showed the count.
         print(f"  Pending review:               {pending}")
+        # Only when non-zero, so a queue that has never used `reject` prints as before.
+        if rejected:
+            print(f"  Rejected:                     {rejected}")
         if blocked:
             print(f"  Blocked by recorded verdict:  {blocked}")
         if pending or on_hold:
@@ -600,6 +684,13 @@ def main() -> int:
         metavar="REASON",
         help="An advisory compliance-gate warning on this draft (repeatable)",
     )
+    p_add.add_argument(
+        "--approve-if-clean",
+        dest="approve_if_clean",
+        action="store_true",
+        help="Approve in the same call if the recorded verdict has no blockers and the brief "
+        "is dates_verified; otherwise leave it queued",
+    )
     p_add.set_defaults(func=cmd_add)
 
     # approve (status-flag workflow)
@@ -634,6 +725,13 @@ def main() -> int:
         help="Why it is being brought back. Stored on the entry as requeued_reason.",
     )
     p_requeue.set_defaults(func=cmd_requeue)
+
+    # hold / reject (writers for the two statuses that previously had none)
+    for name, func, verb in (("hold", cmd_hold, "Hold"), ("reject", cmd_reject, "Reject")):
+        p = sub.add_parser(name, help=f"{verb} an article, recording who and why")
+        p.add_argument("slug", help="Article slug (or draft_path) as stored in publish_queue.json")
+        p.add_argument("--reason", required=True, help="Why. Stored on the entry.")
+        p.set_defaults(func=func)
 
     # mark-published
     p_mark = sub.add_parser("mark-published", help="Mark a draft as published")
