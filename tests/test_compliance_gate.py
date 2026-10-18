@@ -12,7 +12,7 @@ from pathlib import Path
 # Ensure the repo root is on sys.path so pipeline imports resolve correctly.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from pipeline.compliance_gate import GateResult, check  # noqa: E402
+from pipeline.compliance_gate import GateResult, check, check_description  # noqa: E402
 
 BRAND = "TestBrand"
 
@@ -176,3 +176,31 @@ class TestTitleAITells:
         title = "Provisional Tax Catches Small Firms Short Each March"
         result = check(COMPLIANT_ARTICLE, title=title, brand_name=BRAND)
         assert result.passed, "Clean title should not fail. Flags:\n" + "\n".join(result.flags)
+
+
+class TestEmDashTolerance:
+    """workflow.max_em_dash_pct: unset keeps the 30% rule; 0 forbids the em dash outright."""
+
+    ONE_DASH = COMPLIANT_ARTICLE + "\n\nMargins are thin — and IRD sets the dates, not the business."
+
+    def test_default_tolerance_allows_one_em_dash(self):
+        assert check(self.ONE_DASH, brand_name=BRAND).passed
+
+    def test_zero_tolerance_fails_a_single_em_dash(self):
+        result = check(self.ONE_DASH, brand_name=BRAND, max_em_dash_pct=0)
+        assert not result.passed
+        assert any("limit 0%" in f for f in result.flags)
+
+    def test_zero_tolerance_passes_a_dashless_article(self):
+        assert check(COMPLIANT_ARTICLE, brand_name=BRAND, max_em_dash_pct=0).passed
+
+
+class TestDescriptionGate:
+    DASHED = "What GST collected really is — and why NZ SMEs should never treat it as working capital."
+
+    def test_unopted_brand_does_not_gate_the_description(self):
+        assert check_description(self.DASHED, None) == []
+
+    def test_zero_tolerance_flags_an_em_dashed_description(self):
+        assert check_description(self.DASHED, 0)
+        assert check_description(self.DASHED.replace(" —", ","), 0) == []

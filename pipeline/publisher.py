@@ -47,7 +47,7 @@ from pipeline.brand_loader import (
     load_nav_html,
 )
 from pipeline.compliance_gate import check as compliance_check
-from pipeline.compliance_gate import check_topic_overlap
+from pipeline.compliance_gate import check_description, check_topic_overlap
 from pipeline.queue_policy import honoured_override, recorded_blockers
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1146,7 +1146,10 @@ def main() -> int:
     # ── 2b. Compliance gate ───────────────────────────────────────────────────
     print("[2b/7] Running compliance gate…")
     full_text = f"# {title}\n\n{body}"
-    gate = compliance_check(full_text, title=title, brief=brief, brand_name=brand_cfg.display_name)
+    gate = compliance_check(
+        full_text, title=title, brief=brief, brand_name=brand_cfg.display_name,
+        max_em_dash_pct=brand_cfg.max_em_dash_pct,
+    )
     for w in gate.warnings:
         print(f"  ⚠  {w}")
     if not gate.passed:
@@ -1240,6 +1243,14 @@ def main() -> int:
             "edit the queue entry's `description` to change it.",
             file=sys.stderr,
         )
+    # The description ships as page metadata the body gate never saw. No-op unless the
+    # brand sets workflow.max_em_dash_pct.
+    desc_flags = check_description(description, brand_cfg.max_em_dash_pct)
+    if desc_flags:
+        print("  ✗ Description failed the compliance gate — publication blocked.", file=sys.stderr)
+        for f in desc_flags:
+            print(f"    • {f}", file=sys.stderr)
+        return 1
     mins = read_time(body)
     print(f"  Slug: {slug}")
     print(f"  Description: {truncate_description(description, 80)}")

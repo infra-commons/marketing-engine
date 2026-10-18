@@ -40,6 +40,9 @@ from banned_phrases import (
 
 ALL_BANNED = BANNED_PHRASES + LEVERAGE_SYNONYMS + DELVE_SYNONYMS + UNLOCK_SYNONYMS
 
+# Body em-dash tolerance when the brand sets no `workflow.max_em_dash_pct`.
+DEFAULT_MAX_EM_DASH_PCT = 0.30
+
 # ─────────────────────────────────────────────────────────────────────────────
 # NZ-specific reference patterns
 # ─────────────────────────────────────────────────────────────────────────────
@@ -200,7 +203,12 @@ def _check_title(title: str) -> list[str]:
     return flags
 
 
-def _check_structural(text: str) -> list[str]:
+def _em_dash_pct(sentences: list[str]) -> float:
+    """Share of sentences that use an em dash (or a ` -- ` stand-in)."""
+    return sum(1 for s in sentences if any(c in s for c in EM_DASH_CHARS) or ' -- ' in s) / len(sentences)
+
+
+def _check_structural(text: str, max_em_dash_pct: float = DEFAULT_MAX_EM_DASH_PCT) -> list[str]:
     """Hard fail: structural AI tells."""
     flags = []
     sentences = _split_sentences(text)
@@ -209,12 +217,12 @@ def _check_structural(text: str) -> list[str]:
     if not sentences:
         return ["No sentences found — empty or malformed text"]
 
-    # 1. Em-dash as primary break: >30% of sentences
-    em_dash_count = sum(1 for s in sentences if any(c in s for c in EM_DASH_CHARS) or ' -- ' in s)
-    em_dash_pct = em_dash_count / len(sentences)
-    if em_dash_pct > 0.30:
+    # 1. Em-dash as primary break: more than the brand's tolerance (default 30%)
+    em_dash_pct = _em_dash_pct(sentences)
+    if em_dash_pct > max_em_dash_pct:
         flags.append(
-            f"Em-dash overuse: {em_dash_pct:.0%} of sentences use em-dash as primary break (limit 30%)"
+            f"Em-dash overuse: {em_dash_pct:.0%} of sentences use em-dash as primary break "
+            f"(limit {max_em_dash_pct:.0%})"
         )
 
     # 2. Sentence length band: >50% within 12–22 words
@@ -332,6 +340,24 @@ def _check_brand_mention(text: str, brand_name: str) -> tuple[list[str], list[st
         )
 
     return hard_flags, warnings
+
+
+def check_description(description: str, max_em_dash_pct: float | None) -> list[str]:
+    """
+    Hard fail: em dashes in the meta description, under the brand's body tolerance.
+
+    The description ships verbatim as <meta name="description"> and in the JSON-LD block,
+    and the body checks never see it. Gated only when the brand sets
+    `workflow.max_em_dash_pct` (None => []), so a brand that has not opted in publishes
+    exactly what it did before this check existed.
+    """
+    if max_em_dash_pct is None or not description:
+        return []
+    sentences = _split_sentences(description) or [description]
+    pct = _em_dash_pct(sentences)
+    if pct > max_em_dash_pct:
+        return [f"Description em-dash: {pct:.0%} of its sentences use one (limit {max_em_dash_pct:.0%})"]
+    return []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -501,6 +527,7 @@ def check(
     title: str = "",
     brief: dict | None = None,
     brand_name: str = "Cashbucket",
+    max_em_dash_pct: float | None = None,
 ) -> GateResult:
     """
     Run all compliance checks. Returns GateResult.
@@ -513,12 +540,16 @@ def check(
         title:      Optional. If provided, checks opening sentence doesn't restate title.
         brief:      Optional. If provided, runs date grounding check against brief facts.
         brand_name: Brand name for the soft-mention check (default: "Cashbucket").
+        max_em_dash_pct: Brand body em-dash tolerance (`workflow.max_em_dash_pct`).
+                    None => DEFAULT_MAX_EM_DASH_PCT.
     """
     all_flags: list[str] = []
     all_warnings: list[str] = []
 
     all_flags += _check_lexical(text)
-    all_flags += _check_structural(text)
+    if max_em_dash_pct is None:
+        max_em_dash_pct = DEFAULT_MAX_EM_DASH_PCT
+    all_flags += _check_structural(text, max_em_dash_pct)
     all_flags += _check_positive_markers(text)
 
     brand_flags, brand_warnings = _check_brand_mention(text, brand_name)
