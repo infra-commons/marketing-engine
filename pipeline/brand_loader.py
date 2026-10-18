@@ -238,6 +238,19 @@ class BrandConfig:
             )
         return timely
 
+    @property
+    def site_base_branch(self) -> str:
+        """The site repo branch publish branches are cut from and PRs target
+        (`workflow.site_base_branch`, default `main`)."""
+        base = self.workflow.get("site_base_branch", "main")
+        if not isinstance(base, str) or not base.strip():
+            # Refused, not defaulted: a typo here would silently publish against `main`.
+            raise ValueError(
+                f"workflow.site_base_branch for brand '{self.brand}' must be a non-empty "
+                f"branch name, got {base!r}"
+            )
+        return base.strip()
+
     def resolve_draft_path(self, relative_path: str) -> Path:
         """Resolve a queue draft_path (relative to brand dir) to an absolute Path."""
         p = Path(relative_path)
