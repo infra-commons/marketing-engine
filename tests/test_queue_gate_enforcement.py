@@ -330,6 +330,121 @@ def test_status_shows_the_gate_column_and_names_blockers(brand, capsys):
     )
 
 
+# ── hold / reject ─────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("verb,status,prefix", [("hold", "hold", "held"), ("reject", "rejected", "rejected")])
+def test_hold_and_reject_stamp_who_when_and_why(brand, verb, status, prefix):
+    seed(brand, [item(status="queued")])
+    cmd = getattr(queue_manager, f"cmd_{verb}")
+    assert cmd(_ns(brand=brand, slug="a-slug", reason="needs a rewrite")) == 0
+    entry = read(brand)[0]
+    assert entry["status"] == status
+    assert entry[f"{prefix}_by"] == "approver@example.test"
+    assert entry[f"{prefix}_reason"] == "needs a rewrite"
+    assert entry[f"{prefix}_at"].endswith("Z")
+
+
+@pytest.mark.parametrize("verb", ["hold", "reject"])
+def test_hold_and_reject_refuse_a_blank_reason(brand, verb):
+    seed(brand, [item(status="queued")])
+    assert getattr(queue_manager, f"cmd_{verb}")(_ns(brand=brand, slug="a-slug", reason="  ")) == 1
+    assert read(brand)[0]["status"] == "queued"
+
+
+@pytest.mark.parametrize("verb", ["hold", "reject"])
+def test_hold_and_reject_refuse_published(brand, verb):
+    seed(brand, [item(status="published")])
+    assert getattr(queue_manager, f"cmd_{verb}")(_ns(brand=brand, slug="a-slug", reason="r")) == 1
+    assert read(brand)[0]["status"] == "published"
+
+
+def test_hold_refuses_rejected_and_both_are_idempotent(brand):
+    seed(brand, [item(status="rejected")])
+    assert queue_manager.cmd_hold(_ns(brand=brand, slug="a-slug", reason="r")) == 1
+    assert queue_manager.cmd_reject(_ns(brand=brand, slug="a-slug", reason="r")) == 0
+    seed(brand, [item(status="hold")])
+    assert queue_manager.cmd_hold(_ns(brand=brand, slug="a-slug", reason="r")) == 0
+    assert "held_reason" not in read(brand)[0], "a no-op must not restamp the entry"
+
+
+def test_reject_is_terminal_and_hold_is_not(brand):
+    seed(brand, [item(status="queued")])
+    queue_manager.cmd_hold(_ns(brand=brand, slug="a-slug", reason="r"))
+    assert queue_manager.cmd_requeue(_ns(brand=brand, slug="a-slug", reason="")) == 0
+    queue_manager.cmd_reject(_ns(brand=brand, slug="a-slug", reason="r"))
+    assert queue_manager.cmd_requeue(_ns(brand=brand, slug="a-slug", reason="")) == 1
+
+
+def test_holding_an_approved_entry_takes_it_out_of_next(brand, capsys):
+    seed(brand, [item(status="approved")])
+    queue_manager.cmd_hold(_ns(brand=brand, slug="staging/drafts/draft-001-v1.md", reason="r"))
+    capsys.readouterr()
+    queue_manager.cmd_next(_ns(brand=brand, output_env=True))
+    assert "QUEUE_SLUG=\n" in capsys.readouterr().out
+
+
+def test_status_names_rejected_only_when_there_is_one(brand, capsys):
+    seed(brand, [item(status="queued")])
+    queue_manager.cmd_status(_ns(brand=brand))
+    assert "Rejected:" not in capsys.readouterr().out
+    seed(brand, [item(status="rejected")])
+    queue_manager.cmd_status(_ns(brand=brand))
+    assert "Rejected:" in capsys.readouterr().out
+
+
+# ── add --approve-if-clean ────────────────────────────────────────────────────────
+
+
+def _add(brand, approve_if_clean=True, gate_failed=False):
+    return queue_manager.cmd_add(_ns(
+        brand=brand, draft_path="staging/drafts/draft-001-v1.md", slug="s", description="",
+        gate_failed=gate_failed, approve_if_clean=approve_if_clean,
+    ))
+
+
+def _brief(brand, dates_verified=True):
+    root = Path(queue_manager.load_brand(brand).briefs_dir)
+    (root / "brief-001.json").write_text(json.dumps({"dates_verified": dates_verified}), encoding="utf-8")
+
+
+def test_approve_if_clean_approves_a_clean_entry_and_stamps_it(brand):
+    _brief(brand)
+    assert _add(brand) == 0
+    entry = read(brand)[0]
+    assert entry["status"] == "approved"
+    assert entry["approved_by"] == "approver@example.test"
+    assert entry["approved_at"]
+
+
+@pytest.mark.parametrize("gate_failed,dates_verified", [(True, True), (False, False)])
+def test_approve_if_clean_leaves_a_blocked_entry_queued(brand, capsys, gate_failed, dates_verified):
+    _brief(brand, dates_verified)
+    assert _add(brand, gate_failed=gate_failed) == 0
+    assert read(brand)[0]["status"] == "queued"
+    assert "not auto-approved" in capsys.readouterr().out
+
+
+def test_approve_if_clean_does_not_read_a_missing_brief_as_clean(brand):
+    """A human `approve` lets absence pass; an unattended one must not."""
+    _add(brand)
+    assert read(brand)[0]["status"] == "queued"
+
+
+def test_approve_if_clean_never_approves_an_existing_entry(brand):
+    _brief(brand)
+    seed(brand, [item(slug="s", status="queued")])
+    _add(brand)
+    assert read(brand)[0]["status"] == "queued"
+
+
+def test_add_without_the_flag_still_queues_a_clean_entry(brand):
+    _brief(brand)
+    _add(brand, approve_if_clean=False)
+    assert read(brand)[0]["status"] == "queued"
+    assert "approved_by" not in read(brand)[0]
+
+
 # ── publisher ─────────────────────────────────────────────────────────────────────
 
 
