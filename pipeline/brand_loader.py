@@ -251,6 +251,20 @@ class BrandConfig:
             )
         return base.strip()
 
+    @property
+    def max_em_dash_pct(self) -> float | None:
+        """Share of body sentences that may carry an em dash (`workflow.max_em_dash_pct`).
+        Unset is None: the gate keeps its 30% default and the description is not gated."""
+        pct = self.workflow.get("max_em_dash_pct")
+        if pct is None:
+            return None
+        if isinstance(pct, bool) or not isinstance(pct, (int, float)) or not 0 <= pct <= 1:
+            raise ValueError(
+                f"workflow.max_em_dash_pct for brand '{self.brand}' must be a number "
+                f"from 0 to 1, got {pct!r}"
+            )
+        return float(pct)
+
     def resolve_draft_path(self, relative_path: str) -> Path:
         """Resolve a queue draft_path (relative to brand dir) to an absolute Path."""
         p = Path(relative_path)

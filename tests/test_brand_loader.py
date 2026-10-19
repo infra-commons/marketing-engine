@@ -109,6 +109,7 @@ class TestEditorialConfig:
         assert cfg.article_types_restricted is False
         assert cfg.editorial_rules == []
         assert cfg.timely_topics is True
+        assert cfg.max_em_dash_pct is None
 
     def test_configured_keys_are_read(self, monkeypatch):
         cfg = self._cfg(
@@ -134,3 +135,11 @@ class TestEditorialConfig:
     def test_quoted_timely_is_refused_not_read_as_true(self, monkeypatch):
         with pytest.raises(ValueError, match="timely"):
             self._cfg(monkeypatch, timely="false").timely_topics
+
+    def test_max_em_dash_pct_is_read(self, monkeypatch):
+        assert self._cfg(monkeypatch, max_em_dash_pct=0).max_em_dash_pct == 0.0
+
+    @pytest.mark.parametrize("bad", ["0", True, 1.5, -0.1])
+    def test_unusable_max_em_dash_pct_raises(self, monkeypatch, bad):
+        with pytest.raises(ValueError, match="max_em_dash_pct"):
+            self._cfg(monkeypatch, max_em_dash_pct=bad).max_em_dash_pct

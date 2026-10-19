@@ -99,7 +99,7 @@ class TestGateScoresTheArticlesOwnHeadline:
     def test_clean_article_passes_despite_an_em_dashed_topic_statement(self):
         brief = {"brief_id": "brief-001", "topic_statement": EM_DASHED_TOPIC_STATEMENT}
         result = draft_generator._gate(
-            CLEAN_ARTICLE, brief, SimpleNamespace(display_name=BRAND)
+            CLEAN_ARTICLE, brief, SimpleNamespace(display_name=BRAND, max_em_dash_pct=None)
         )
         assert result.passed, "unexpected flags:\n" + "\n".join(result.flags)
 
@@ -121,7 +121,7 @@ class TestGateScoresTheArticlesOwnHeadline:
         result = draft_generator._gate(
             _with_em_dashed_headline(CLEAN_ARTICLE),
             {},
-            SimpleNamespace(display_name=BRAND),
+            SimpleNamespace(display_name=BRAND, max_em_dash_pct=None),
         )
         assert not result.passed
         assert any("em/en dash" in flag for flag in result.flags)
@@ -130,7 +130,7 @@ class TestGateScoresTheArticlesOwnHeadline:
         """The property that matters: one article, one verdict, at both stages."""
         brief = {"brief_id": "brief-001", "topic_statement": EM_DASHED_TOPIC_STATEMENT}
         generator_result = draft_generator._gate(
-            CLEAN_ARTICLE, brief, SimpleNamespace(display_name=BRAND)
+            CLEAN_ARTICLE, brief, SimpleNamespace(display_name=BRAND, max_em_dash_pct=None)
         )
         # What publisher.py does at its own gate step: parse the H1, gate against it.
         title, body = parse_draft_text(CLEAN_ARTICLE)
@@ -447,3 +447,44 @@ class TestArticleTypeDefault:
         cfg = self._cfg(monkeypatch, article_types=["how-to", "explainer"])
         prompt = draft_generator._build_generation_prompt({"topic_statement": "x"}, self.PHRASES, cfg)
         assert "## ARTICLE TYPE: how-to" in prompt
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Zero em-dash brands: the prompt forbids them, the strip removes the ones that slip
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestZeroEmDashBrand:
+    @pytest.mark.parametrize(
+        "text, expected",
+        [
+            ("GST — the float — is not yours.", "GST, the float, is not yours."),
+            ("It costs—a lot.", "It costs, a lot."),
+            ("A gap &mdash; widening.", "A gap, widening."),
+            ("It ends here —.", "It ends here."),
+            ("Pay by 28 March -- or else.", "Pay by 28 March, or else."),
+        ],
+    )
+    def test_strip_em_dashes(self, text, expected):
+        assert draft_generator.strip_em_dashes(text) == expected
+
+    def test_prompt_forbids_em_dashes_only_when_the_brand_opts_in(self, monkeypatch):
+        cfg = TestArticleTypeDefault._cfg(monkeypatch)
+        assert "NEVER use an em dash" not in draft_generator._build_system_prompt(cfg)
+        assert "Maximum 30%" in draft_generator._build_system_prompt(cfg)
+        cfg.workflow = {**cfg.workflow, "max_em_dash_pct": 0}
+        assert "NEVER use an em dash" in draft_generator._build_system_prompt(cfg)
+
+    def test_a_dashed_draft_is_stripped_before_the_gate(self, stub_brand, monkeypatch):
+        cfg = {**_BRAND_YAML, "workflow": {**_BRAND_YAML["workflow"], "max_em_dash_pct": 0}}
+        (stub_brand / "brand.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+        dashed = CLEAN_ARTICLE + "\n\nMargins are thin — and IRD sets the dates, not the business."
+        stub = _install_stub(monkeypatch, dashed)
+        brief_path = _write_brief(stub_brand, "A clean topic statement with no dash.")
+
+        out_path, result = draft_generator.generate(
+            brief_path=str(brief_path), brand_slug="testbrand", verbose=False
+        )
+
+        assert result.passed, "unexpected flags:\n" + "\n".join(result.flags)
+        assert len(stub.calls) == 1, "the strip, not a retry, removes the dash"
+        assert "—" not in out_path.read_text(encoding="utf-8")

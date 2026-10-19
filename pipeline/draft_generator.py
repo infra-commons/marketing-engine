@@ -123,6 +123,29 @@ def _build_banned_block() -> str:
     return "\n".join(lines)
 
 
+def _em_dash_rule(brand_cfg: BrandConfig) -> str:
+    """Rule 7: the brand's em-dash tolerance, so the prompt and the gate state one rule."""
+    pct = brand_cfg.max_em_dash_pct
+    if pct == 0:
+        return ("NEVER use an em dash (—) anywhere: not in the title, the body or the description. "
+                "Use a comma, colon, full stop or parentheses instead.")
+    if pct is None:
+        return "Em-dashes (—): use sparingly. Maximum 30% of sentences may contain an em-dash."
+    return f"Em-dashes (—): use sparingly. Maximum {pct:.0%} of sentences may contain an em-dash."
+
+
+def strip_em_dashes(text: str) -> str:
+    """Replace every em dash (and its `&mdash;` / ` -- ` stand-ins) with a comma.
+
+    For a zero-tolerance brand the prompt forbids them, but the writer still produces a few,
+    and a retry spends a second flagship call to remove what a substitution removes for free.
+    A comma is the reading an aside dash almost always has; the gate still runs afterwards.
+    """
+    text = re.sub(r"[ \t]*(?:—|&mdash;| -- )[ \t]*", ", ", text)
+    # A dash next to existing punctuation leaves ", ." or ",," behind.
+    return re.sub(r",[ \t]*([,.;:!?])", r"\1", text)
+
+
 def _build_system_prompt(brand_cfg: BrandConfig) -> str:
     """
     Static system prompt — cached via prompt caching on every call.
@@ -144,7 +167,7 @@ HARD STRUCTURAL RULES (gate will fail if violated):
 4. {brand_cfg.brand_section_label} mention is in section 5 ONLY — one paragraph, soft, as one option among several.
 5. Opening sentence MUST NOT restate the title.
 6. Closing MUST NOT begin with "In conclusion", "To summarise", "To summarize", "As we have seen", or any restatement of the article structure.
-7. Em-dashes (—): use sparingly. Maximum 30% of sentences may contain an em-dash.
+7. {_em_dash_rule(brand_cfg)}
 
 ARTICLE STRUCTURE (fixed spine — sections 1–6):
 1. Intro (150–200 words) — specific NZ hook, does NOT restate title
@@ -284,7 +307,10 @@ def _gate(article: str, brief: dict, brand_cfg: BrandConfig) -> GateResult:
     performed whenever a brief carried no topic statement.
     """
     title, _body = parse_draft_text(article)
-    return gate_check(article, title=title, brief=brief, brand_name=brand_cfg.display_name)
+    return gate_check(
+        article, title=title, brief=brief, brand_name=brand_cfg.display_name,
+        max_em_dash_pct=brand_cfg.max_em_dash_pct,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -397,6 +423,8 @@ def generate(
     )
 
     article = reply_text(response)
+    if brand_cfg.max_em_dash_pct == 0:
+        article = strip_em_dashes(article)
     word_count = len(article.split())
 
     if verbose:
@@ -445,6 +473,8 @@ def generate(
         )
 
         article = reply_text(retry_response)
+        if brand_cfg.max_em_dash_pct == 0:
+            article = strip_em_dashes(article)
         word_count = len(article.split())
         # Re-parse: the retry prompt asks for the complete article "start directly with
         # # [Title]", so attempt 2 may carry a different headline. Gating it against
