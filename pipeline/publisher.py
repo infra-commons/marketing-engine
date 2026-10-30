@@ -516,6 +516,15 @@ def build_article_html(
   </div>
 </section>"""
 
+    # A brand may self-host its fonts; otherwise fall back to Google Fonts.
+    if brand_cfg.font_css_href:
+        href_esc = brand_cfg.font_css_href.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
+        font_links = f'<link rel="stylesheet" href="{href_esc}" />'
+    else:
+        font_links = """<link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto:wght@400;500&display=swap" rel="stylesheet" />"""
+
     return f"""<!DOCTYPE html>
 <html lang="en-NZ">
 <head>
@@ -529,9 +538,7 @@ def build_article_html(
   </script>
   <link rel="icon" href="/assets/favicon.png" sizes="32x32" />
   <link rel="apple-touch-icon" href="/assets/favicon.png" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto:wght@400;500&display=swap" rel="stylesheet" />
+  {font_links}
   <style>
     *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
     :root {{
