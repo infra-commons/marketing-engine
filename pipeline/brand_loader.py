@@ -112,6 +112,8 @@ class BrandConfig:
     newsletter_signup_url: str = ""
     newsletter_cta_headline: str = ""
     newsletter_cta_body: str = ""
+    # Self-hosted font stylesheet href (empty string => Google Fonts links).
+    font_css_href: str = ""
     # Channel config dicts, consumed by brand-local tools (MailerLite/Buffer/analytics).
     # Empty dict => channel inactive for this brand.
     newsletter: dict = field(default_factory=dict)
@@ -325,6 +327,7 @@ def load_brand(brand_slug: str) -> BrandConfig:
         newsletter_signup_url=d.get("newsletter_signup_url", ""),
         newsletter_cta_headline=d.get("newsletter_cta_headline", ""),
         newsletter_cta_body=d.get("newsletter_cta_body", ""),
+        font_css_href=d.get("font_css_href", ""),
         newsletter=d.get("newsletter", {}),
         buffer=d.get("buffer", {}),
         analytics=d.get("analytics", {}),

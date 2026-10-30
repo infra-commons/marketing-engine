@@ -8,6 +8,7 @@ at tests/fixtures/brands/testbrand/, so the suite is standalone and does not
 read any consuming repo.
 """
 
+import dataclasses
 import json
 import re
 import sys
@@ -89,3 +90,27 @@ class TestArticleJsonLd:
         obj = _extract_jsonld(html)
         # The raw block must not contain an unescaped terminator inside a value.
         assert obj["headline"] == "Bad </script> Title"
+
+
+GOOGLE_FONTS_LINKS = """  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto:wght@400;500&display=swap" rel="stylesheet" />
+"""
+
+
+class TestFontStylesheet:
+    def test_default_keeps_google_fonts(self, brand_cfg):
+        assert brand_cfg.font_css_href == ""
+        assert GOOGLE_FONTS_LINKS in _render(brand_cfg)
+
+    def test_self_hosted_href_replaces_google_fonts(self, brand_cfg):
+        cfg = dataclasses.replace(brand_cfg, font_css_href="/assets/fonts.css")
+        html = _render(cfg)
+        assert html.count('<link rel="stylesheet" href="/assets/fonts.css" />') == 1
+        assert "fonts.googleapis" not in html
+        assert "fonts.gstatic" not in html
+
+    def test_self_hosted_href_is_html_escaped(self, brand_cfg):
+        cfg = dataclasses.replace(brand_cfg, font_css_href='/f.css?a=1&b="x"<')
+        html = _render(cfg)
+        assert '<link rel="stylesheet" href="/f.css?a=1&amp;b=&quot;x&quot;&lt;" />' in html
