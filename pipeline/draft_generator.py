@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from banned_phrases import BANNED_PHRASES, LEVERAGE_SYNONYMS, DELVE_SYNONYMS, UNLOCK_SYNONYMS
 from pipeline.brand_loader import DEFAULT_BRAND, BrandConfig, load_brand, load_phrase_banks
-from pipeline.claude_response import reply_text
+from pipeline.claude_response import NoTextBlockError, reply_text
 from pipeline.compliance_gate import GateResult, check as gate_check
 from pipeline.publisher import parse_draft_text
 
@@ -50,14 +50,26 @@ from pipeline.publisher import parse_draft_text
 # infra-commons/meta model-registry.yaml `tier_equivalence:`. Draft prose IS the
 # product here.
 MODEL = os.environ.get("MODEL") or "claude-opus-5-5"
-# Adaptive thinking counts against this cap on top of a ~2k-token article. The cap bills
-# on tokens used, not on its size — see topic_selector.MAX_TOKENS.
-MAX_TOKENS = 16000
+# Adaptive thinking counts against this cap on top of a ~2k-token article, and on Opus 5.5
+# it cannot be turned off. At 16000 with effort=high, thinking used the whole cap before any
+# article was written (cashbucket-com/marketing run 42742944504, 2026-11-10). The cap bills
+# on tokens used, not on its size, so the headroom is free. A cap this large needs a
+# streaming request: the SDK refuses non-streaming requests it expects to run long.
+MAX_TOKENS = 64000
 # Opus 5.5 defaults to medium effort (Opus 5 defaulted to high). Draft prose is the
 # product, so pin high rather than inherit the lower default.
 EFFORT = "high"
 
-ALL_BANNED = BANNED_PHRASES + LEVERAGE_SYNONYMS + DELVE_SYNONYMS + UNLOCK_SYNONYMS
+# Exit status for an engine failure (the model returned no usable article, or the API call
+# failed), distinct from 1 (gate / fact-check fail) so a consumer can name the reason.
+EXIT_ENGINE_FAILURE = 4
+
+
+class TruncatedDraftError(NoTextBlockError):
+    """The reply hit max_tokens: any text it carries is a cut-off article, not a draft."""
+
+
+ALL_BANNED = BANNED_PHRASES +LEVERAGE_SYNONYMS + DELVE_SYNONYMS + UNLOCK_SYNONYMS
 
 # Article type → Analysis section instructions (shared across brands)
 ANALYSIS_INSTRUCTIONS = {
@@ -279,6 +291,42 @@ ORIGINAL ARTICLE TO REVISE:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Model call
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _call_model(client, system_prompt: str, messages: list[dict]):
+    """One streamed generation; returns the final Message. MAX_TOKENS needs streaming."""
+    with client.messages.stream(
+        model=MODEL,
+        max_tokens=MAX_TOKENS,
+        output_config={"effort": EFFORT},
+        system=[
+            {
+                "type": "text",
+                "text": system_prompt,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
+        messages=messages,
+    ) as stream:
+        return stream.get_final_message()
+
+
+def _reply_article(response) -> str:
+    """The article text. Raises NoTextBlockError (or its TruncatedDraftError) if none.
+
+    A reply cut off at max_tokens is refused even when it carries text: the gate would
+    otherwise score half an article, and a gate retry would ask the model to "fix" it.
+    """
+    if getattr(response, "stop_reason", None) == "max_tokens":
+        raise TruncatedDraftError(
+            f"draft reply hit the {MAX_TOKENS}-token cap (stop_reason=max_tokens); "
+            "thinking plus article exceeded it, so no complete article was written"
+        )
+    return reply_text(response)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Gate
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -406,23 +454,11 @@ def generate(
     if verbose:
         print(f"\n🤖  Calling {MODEL} (attempt 1)...")
 
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=MAX_TOKENS,
-        output_config={"effort": EFFORT},
-        system=[
-            {
-                "type": "text",
-                "text": system_prompt,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-        messages=[
-            {"role": "user", "content": generation_prompt}
-        ],
+    response = _call_model(
+        client, system_prompt, [{"role": "user", "content": generation_prompt}]
     )
 
-    article = reply_text(response)
+    article = _reply_article(response)
     if brand_cfg.max_em_dash_pct == 0:
         article = strip_em_dashes(article)
     word_count = len(article.split())
@@ -454,25 +490,17 @@ def generate(
 
         retry_prompt = _build_retry_prompt(article, result.flags)
 
-        retry_response = client.messages.create(
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
-            output_config={"effort": EFFORT},
-            system=[
-                {
-                    "type": "text",
-                    "text": system_prompt,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            messages=[
+        retry_response = _call_model(
+            client,
+            system_prompt,
+            [
                 {"role": "user", "content": generation_prompt},
                 {"role": "assistant", "content": article},
                 {"role": "user", "content": retry_prompt},
             ],
         )
 
-        article = reply_text(retry_response)
+        article = _reply_article(retry_response)
         if brand_cfg.max_em_dash_pct == 0:
             article = strip_em_dashes(article)
         word_count = len(article.split())
@@ -621,12 +649,16 @@ Examples:
     )
     args = parser.parse_args()
 
-    out_path, gate_result = generate(
-        brief_path=args.brief,
-        brand_slug=args.brand,
-        output_path=args.output,
-        verbose=not args.quiet,
-        dry_run=args.dry_run,
-    )
+    try:
+        out_path, gate_result = generate(
+            brief_path=args.brief,
+            brand_slug=args.brand,
+            output_path=args.output,
+            verbose=not args.quiet,
+            dry_run=args.dry_run,
+        )
+    except (NoTextBlockError, anthropic.APIError) as e:
+        print(f"\n❌  ENGINE FAILURE (model): {e}", file=sys.stderr)
+        sys.exit(EXIT_ENGINE_FAILURE)
 
     sys.exit(0 if gate_result.passed else 1)

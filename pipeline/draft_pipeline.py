@@ -26,9 +26,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import anthropic
+
 from pipeline import draft_generator, topic_selector
 from pipeline.brand_loader import DEFAULT_BRAND, load_brand
+from pipeline.claude_response import NoTextBlockError
 from pipeline.queue_manager import cmd_add
+
+# Exit codes: 1 = generic failure, 3 = brand not on the status approval model,
+# 4 = engine failure (the model returned no usable article, or the API call failed).
+EXIT_ENGINE_FAILURE = draft_generator.EXIT_ENGINE_FAILURE
 
 
 def run(
@@ -76,9 +83,13 @@ def run(
 
     # ── Stage 1b: generate the draft ──────────────────────────────────────────
     print(f"\n🤖  Generating draft for {brief['brief_id']}…")
-    out_path, gate_result = draft_generator.generate(
-        brief_rel, brand_slug=brand_slug, verbose=True
-    )
+    try:
+        out_path, gate_result = draft_generator.generate(
+            brief_rel, brand_slug=brand_slug, verbose=True
+        )
+    except (NoTextBlockError, anthropic.APIError) as e:
+        print(f"\n❌  ENGINE FAILURE (model): {e}", file=sys.stderr)
+        return EXIT_ENGINE_FAILURE
     draft_rel = str(out_path.relative_to(cfg.brand_dir))
 
     # ── Stage 1c: enqueue in the HELD state (needs human sign-off) ────────────
