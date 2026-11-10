@@ -42,9 +42,11 @@ from pipeline.claude_response import NoTextBlockError, reply_text
 
 MODEL = "claude-sonnet-5-5"
 # Headroom for adaptive thinking (which counts against this cap) plus a report the model
-# may prefix with reasoning; a cut-off report cannot parse. The cap bills on tokens used,
-# not on its size — see topic_selector.MAX_TOKENS.
-MAX_TOKENS = 16000
+# may prefix with reasoning; a cut-off report cannot parse. At 16000, thinking could spend
+# the whole cap — the failure draft_generator hit (#53) — and a truncated check fails
+# closed, blocking a sound draft. The cap bills on tokens used, not on its size. A cap
+# this large needs a streaming request: the SDK refuses long non-streaming requests.
+MAX_TOKENS = 64000
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -208,11 +210,12 @@ def check(
     client = anthropic.Anthropic(api_key=key)
     prompt = _build_prompt(draft, brief, existing_articles or [])
 
-    response = client.messages.create(
+    with client.messages.stream(
         model=MODEL,
         max_tokens=MAX_TOKENS,
         messages=[{"role": "user", "content": prompt}],
-    )
+    ) as stream:
+        response = stream.get_final_message()
 
     try:
         raw = reply_text(response)

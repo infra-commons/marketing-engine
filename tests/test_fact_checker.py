@@ -29,11 +29,35 @@ def _text(t):
     return SimpleNamespace(type="text", text=t)
 
 
-def _run(monkeypatch, blocks, stop_reason="end_turn"):
+class _Stream:
+    """`client.messages.stream(...)`: records the call; its final message is `response`."""
+
+    def __init__(self, response, calls, kwargs):
+        self.response = response
+        calls.append(kwargs)
+
+    def __enter__(self):
+        return SimpleNamespace(get_final_message=lambda: self.response)
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _run(monkeypatch, blocks, stop_reason="end_turn", calls=None):
     response = SimpleNamespace(content=blocks, stop_reason=stop_reason)
-    client = SimpleNamespace(messages=SimpleNamespace(create=lambda **_: response))
+    calls = [] if calls is None else calls
+    client = SimpleNamespace(
+        messages=SimpleNamespace(stream=lambda **kw: _Stream(response, calls, kw))
+    )
     monkeypatch.setattr(fact_checker.anthropic, "Anthropic", lambda **_: client)
     return fact_checker.check("draft", BRIEF, api_key="test")
+
+
+def test_the_cap_leaves_room_for_thinking(monkeypatch):
+    """At 16000, thinking could spend the whole cap and block a sound draft (#53)."""
+    calls = []
+    _run(monkeypatch, [_text(_report([]))], calls=calls)
+    assert calls[0]["max_tokens"] >= 32000
 
 
 def _report(errors, warnings=()):
