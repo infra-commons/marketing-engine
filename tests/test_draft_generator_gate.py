@@ -34,6 +34,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pipeline import draft_generator  # noqa: E402
+from pipeline.claude_response import NoTextBlockError  # noqa: E402
 from pipeline.compliance_gate import check as gate_check  # noqa: E402
 from pipeline.publisher import parse_draft, parse_draft_text  # noqa: E402
 
@@ -198,6 +199,7 @@ class _StubMessages:
         self.calls.append(kwargs)
         return SimpleNamespace(
             content=[SimpleNamespace(text=self.articles[idx])],
+            stop_reason="end_turn",
             usage=SimpleNamespace(
                 input_tokens=0,
                 output_tokens=0,
@@ -205,6 +207,19 @@ class _StubMessages:
                 cache_read_input_tokens=0,
             ),
         )
+
+    def stream(self, **kwargs):
+        """`client.messages.stream(...)`: a context manager whose final message is create()'s."""
+        stub = self
+
+        class _Stream:
+            def __enter__(self):
+                return SimpleNamespace(get_final_message=lambda: stub.create(**kwargs))
+
+            def __exit__(self, *exc):
+                return False
+
+        return _Stream()
 
 
 @pytest.fixture
@@ -488,3 +503,68 @@ class TestZeroEmDashBrand:
         assert result.passed, "unexpected flags:\n" + "\n".join(result.flags)
         assert len(stub.calls) == 1, "the strip, not a retry, removes the dash"
         assert "—" not in out_path.read_text(encoding="utf-8")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Thinking must not be able to spend the whole output cap
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestOutputCap:
+    """cashbucket-com/marketing run 42742944504: at max_tokens=16000 and effort=high,
+    adaptive thinking spent the whole cap and the reply was a lone thinking block."""
+
+    def _replying(self, monkeypatch, content, stop_reason):
+        stub = _install_stub(monkeypatch, CLEAN_ARTICLE)
+        real_create = stub.create
+
+        def create(**kwargs):
+            response = real_create(**kwargs)
+            response.content, response.stop_reason = content, stop_reason
+            return response
+
+        stub.create = create
+        return stub
+
+    def test_the_cap_leaves_room_for_thinking(self, stub_brand, monkeypatch):
+        stub = _install_stub(monkeypatch, CLEAN_ARTICLE)
+        brief_path = _write_brief(stub_brand, "A clean topic statement with no dash.")
+        draft_generator.generate(
+            brief_path=str(brief_path), brand_slug="testbrand", verbose=False, dry_run=True
+        )
+        assert stub.calls[0]["max_tokens"] >= 32000, "16000 is the cap thinking exhausted"
+
+    def test_thinking_only_reply_is_an_engine_failure(self, stub_brand, monkeypatch):
+        self._replying(
+            monkeypatch, [SimpleNamespace(type="thinking", thinking="")], "max_tokens"
+        )
+        brief_path = _write_brief(stub_brand, "A clean topic statement with no dash.")
+        with pytest.raises(NoTextBlockError):
+            draft_generator.generate(
+                brief_path=str(brief_path), brand_slug="testbrand", verbose=False
+            )
+        assert not list((stub_brand / "staging").rglob("draft-*.md"))
+
+    def test_truncated_text_is_not_gated_as_an_article(self, stub_brand, monkeypatch):
+        half = CLEAN_ARTICLE[: len(CLEAN_ARTICLE) // 2]
+        stub = self._replying(monkeypatch, [SimpleNamespace(type="text", text=half)], "max_tokens")
+        brief_path = _write_brief(stub_brand, "A clean topic statement with no dash.")
+        with pytest.raises(draft_generator.TruncatedDraftError):
+            draft_generator.generate(
+                brief_path=str(brief_path), brand_slug="testbrand", verbose=False
+            )
+        assert len(stub.calls) == 1, "a cut-off article must not be sent back for a gate retry"
+
+    def test_the_pipeline_exits_with_the_engine_failure_code(self, stub_brand, monkeypatch):
+        from pipeline import draft_pipeline
+
+        brief_path = _write_brief(stub_brand, "A clean topic statement with no dash.")
+
+        def boom(*a, **k):
+            raise NoTextBlockError("model response has no text block")
+
+        monkeypatch.setattr(draft_pipeline.draft_generator, "generate", boom)
+        monkeypatch.setattr(draft_pipeline, "load_brand", lambda slug: SimpleNamespace(
+            approval_model="status", brand_dir=stub_brand,
+        ))
+        code = draft_pipeline.run("testbrand", existing_brief="brief-001")
+        assert code == draft_pipeline.EXIT_ENGINE_FAILURE == 4
