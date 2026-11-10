@@ -557,7 +557,7 @@ class TestOutputCap:
     def test_the_pipeline_exits_with_the_engine_failure_code(self, stub_brand, monkeypatch):
         from pipeline import draft_pipeline
 
-        brief_path = _write_brief(stub_brand, "A clean topic statement with no dash.")
+        _write_brief(stub_brand, "A clean topic statement with no dash.")
 
         def boom(*a, **k):
             raise NoTextBlockError("model response has no text block")
