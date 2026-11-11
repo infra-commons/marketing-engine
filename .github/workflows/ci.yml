@@ -60,3 +60,26 @@ jobs:
       pytest_version: "8.3.4"
       pytest_cov_version: "6.0.0"
       cache_dependency_path: requirements.txt
+
+  lint:
+    # Until this job existed nothing here ran ruff, so the first lint gate an
+    # engine change met was a consumer's: rolliq-com/marketing lints the pinned
+    # submodule with `ruff check engine/pipeline/ engine/tests/`, and v1.4.0
+    # failed it (lead relay #1032). Same scope as that consumer gate, same
+    # config (pyproject.toml). ruff is pinned so a ruff release can't turn this
+    # red on an unrelated PR; bump it deliberately.
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+      - name: Install ruff
+        run: pip install ruff==0.16.0
+      - name: ruff check
+        run: ruff check pipeline/ tests/
