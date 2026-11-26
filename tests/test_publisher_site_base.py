@@ -7,6 +7,7 @@ against a local bare "origin" (no network) with the checkout deliberately on a n
 branch, and assert the commit that would be pushed sits directly on origin/<base>.
 """
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -103,22 +104,87 @@ class TestPublishBranchRoot:
         assert _git(site, "branch", "--show-current") == "staging"
 
 
-class TestMergeFailureMessage:
-    def test_prints_gh_reason_not_a_fixed_staging_excuse(self, tmp_path, monkeypatch, capsys):
+PR_URL = "https://github.com/example/site/pull/7"
+
+
+class TestMergeVerification:
+    """`gh pr merge --auto` exiting 0 only enables auto-merge; success needs state MERGED."""
+
+    @pytest.fixture
+    def gh(self, monkeypatch):
+        """Fake `_run` + clock. Set `views` to the PR states successive `gh pr view` calls see."""
         monkeypatch.setattr(publisher, "_get_gh_token", lambda brand_cfg: "")
+        fake = SimpleNamespace(views=[], merge_rc=0, merge_err="", clock=[0.0], polls=0)
 
         def fake_run(cmd, cwd, check=True, env=None):
             if cmd[:3] == ["gh", "pr", "merge"]:
-                return subprocess.CompletedProcess(cmd, 1, "", "auto-merge is not allowed for this repository\n")
+                return subprocess.CompletedProcess(cmd, fake.merge_rc, "", fake.merge_err)
+            if cmd[:3] == ["gh", "pr", "view"]:
+                pr = fake.views[min(fake.polls, len(fake.views) - 1)]
+                fake.polls += 1
+                return subprocess.CompletedProcess(cmd, 0, json.dumps({"url": PR_URL, **pr}), "")
             out = "articles/x.html\n" if cmd[:3] == ["git", "diff", "--cached"] else ""
             return subprocess.CompletedProcess(cmd, 0, out, "")
 
-        monkeypatch.setattr(publisher, "_run", fake_run)
-        publisher.git_push_site(tmp_path, SLUG, _cfg(), dry_run=False)
+        def fake_sleep(s):
+            fake.clock[0] += s
 
+        monkeypatch.setattr(publisher, "_run", fake_run)
+        monkeypatch.setattr(publisher.time, "sleep", fake_sleep)
+        monkeypatch.setattr(publisher.time, "monotonic", lambda: fake.clock[0])
+        return fake
+
+    def _push(self, tmp_path):
+        cfg = _cfg(merge_wait_seconds=60, merge_poll_seconds=10)
+        publisher.git_push_site(tmp_path, SLUG, cfg, dry_run=False)
+
+    def test_returns_once_merged(self, gh, tmp_path, capsys):
+        gh.views = [{"state": "OPEN"}, {"state": "OPEN"}, {"state": "MERGED"}]
+        self._push(tmp_path)
         out = capsys.readouterr().out
-        assert "auto-merge is not allowed for this repository" in out
-        assert "staging" not in out
+        assert f"PR merged into main: {PR_URL}" in out
+        assert "will deploy" not in out
+        assert gh.polls == 3
+
+    def test_still_open_at_deadline_raises_naming_blocker(self, gh, tmp_path):
+        gh.views = [{
+            "state": "OPEN",
+            "mergeStateStatus": "BLOCKED",
+            "reviewDecision": "REVIEW_REQUIRED",
+            "statusCheckRollup": [
+                {"name": "build", "conclusion": "SUCCESS"},
+                {"name": "lint", "conclusion": "FAILURE"},
+                {"context": "legacy/ci", "state": "ERROR"},
+            ],
+        }]
+        with pytest.raises(publisher.PublishNotMerged) as exc:
+            self._push(tmp_path)
+        msg = str(exc.value)
+        for part in ("not merged after 60s", PR_URL, "mergeStateStatus=BLOCKED",
+                     "reviewDecision=REVIEW_REQUIRED", "lint", "legacy/ci"):
+            assert part in msg
+        assert "build" not in msg
+        assert gh.clock[0] >= 60
+
+    def test_auto_merge_refused_carries_gh_reason(self, gh, tmp_path):
+        gh.merge_rc, gh.merge_err = 1, "auto-merge is not allowed for this repository\n"
+        gh.views = [{"state": "OPEN", "mergeStateStatus": "CLEAN"}]
+        with pytest.raises(publisher.PublishNotMerged) as exc:
+            self._push(tmp_path)
+        assert "auto-merge is not allowed for this repository" in str(exc.value)
+        assert "staging" not in str(exc.value)
+
+    def test_manual_merge_after_auto_refused_succeeds(self, gh, tmp_path, capsys):
+        gh.merge_rc, gh.merge_err = 1, "auto-merge is not allowed\n"
+        gh.views = [{"state": "OPEN"}, {"state": "MERGED"}]
+        self._push(tmp_path)
+        assert "PR merged into main" in capsys.readouterr().out
+
+    def test_closed_raises_without_waiting(self, gh, tmp_path):
+        gh.views = [{"state": "CLOSED"}]
+        with pytest.raises(publisher.PublishNotMerged, match="PR was closed"):
+            self._push(tmp_path)
+        assert gh.polls == 1 and gh.clock[0] == 0
 
 
 class TestSiteBaseBranchConfig:

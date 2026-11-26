@@ -28,6 +28,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -961,7 +962,8 @@ def checkout_site_base(site_path: Path, slug: str, brand_cfg: BrandConfig) -> No
 
 
 def git_push_site(site_path: Path, slug: str, brand_cfg: BrandConfig, dry_run: bool = False) -> None:
-    """Commit article to the publish branch and open a PR with auto-merge.
+    """Commit article to the publish branch, open a PR with auto-merge, and return only
+    once that PR has MERGED (raises PublishNotMerged otherwise).
 
     Expects checkout_site_base to have put the checkout on publish/<slug>.
     """
@@ -1030,16 +1032,81 @@ def git_push_site(site_path: Path, slug: str, brand_cfg: BrandConfig, dry_run: b
         env=gh_env,
         check=False,
     )
+    merge_note = ""
     if merge.returncode == 0:
-        print("  ✓ PR created and auto-merge enabled — article will deploy once checks pass.")
+        print("  ℹ  Auto-merge enabled — waiting for the PR to merge…")
     else:
         # gh's own reason, whatever it is: the old fixed "not available on staging" text
-        # printed for every failure and hid the real one.
+        # printed for every failure and hid the real one. Not fatal by itself: an operator
+        # can still merge by hand inside the wait window.
         reason = (merge.stderr.strip() or merge.stdout.strip() or f"exit {merge.returncode}")
-        print(
-            f"  ✓ PR created against {brand_cfg.site_base_branch} — auto-merge not enabled "
-            f"({reason}); merge manually."
+        merge_note = f"auto-merge not enabled: {reason}"
+        print(f"  ⚠  {merge_note} — waiting for a manual merge…")
+
+    # `--auto` exiting 0 means auto-merge was ENABLED, not that anything merged. Only the
+    # PR reaching MERGED establishes the publish; anything else raises.
+    url = _wait_for_merge(site_path, branch, brand_cfg, gh_env, merge_note)
+    print(f"  ✓ PR merged into {brand_cfg.site_base_branch}: {url}")
+
+
+class PublishNotMerged(RuntimeError):
+    """The publish PR did not reach MERGED: closed, or still open at the deadline."""
+
+
+_FAILED_CONCLUSIONS = {"FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"}
+
+
+def _failing_checks(rollup: list | None) -> list[str]:
+    names = []
+    for c in rollup or []:
+        # CheckRun reports `conclusion`; legacy StatusContext reports `state`.
+        if (c.get("conclusion") or c.get("state") or "").upper() in _FAILED_CONCLUSIONS:
+            names.append(c.get("name") or c.get("context") or "?")
+    return names
+
+
+def _wait_for_merge(site_path: Path, branch: str, brand_cfg: BrandConfig,
+                    gh_env: dict, merge_note: str = "") -> str:
+    """Poll the publish PR until MERGED and return its URL; raise PublishNotMerged
+    (naming the blocker) if it is closed, or still open after workflow.merge_wait_seconds."""
+    wait = float(brand_cfg.workflow.get("merge_wait_seconds", 600))
+    interval = float(brand_cfg.workflow.get("merge_poll_seconds", 15))
+    deadline = time.monotonic() + wait
+    pr: dict = {}
+    last_err = ""
+    while True:
+        view = _run(
+            ["gh", "pr", "view", branch, "--repo", brand_cfg.site_repo, "--json",
+             "state,url,mergeStateStatus,reviewDecision,statusCheckRollup"],
+            cwd=site_path, env=gh_env, check=False,
         )
+        if view.returncode == 0:
+            try:
+                pr, last_err = json.loads(view.stdout), ""
+            except json.JSONDecodeError:
+                last_err = f"unparseable gh pr view output: {view.stdout[:200]!r}"
+        else:
+            last_err = view.stderr.strip() or f"gh pr view exit {view.returncode}"
+        state = pr.get("state")
+        if state == "MERGED":
+            return pr.get("url", branch)
+        if state == "CLOSED" or time.monotonic() >= deadline:
+            break
+        time.sleep(interval)
+
+    failing = _failing_checks(pr.get("statusCheckRollup"))
+    detail = [
+        f"state={state or 'unknown'}",
+        f"mergeStateStatus={pr.get('mergeStateStatus') or 'unknown'}",
+        f"reviewDecision={pr.get('reviewDecision') or 'none'}",
+        f"failing checks: {', '.join(failing) if failing else 'none'}",
+    ]
+    if merge_note:
+        detail.append(merge_note)
+    if last_err:
+        detail.append(f"last gh error: {last_err}")
+    why = "PR was closed" if state == "CLOSED" else f"PR not merged after {wait:.0f}s"
+    raise PublishNotMerged(f"{why} ({pr.get('url', branch)}): " + "; ".join(detail))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1369,6 +1436,9 @@ def main() -> int:
         git_push_site(site_path, slug, brand_cfg, dry_run=args.dry_run)
     except subprocess.CalledProcessError as e:
         print(f"  ERROR during git operation:\n  {e.stderr}", file=sys.stderr)
+        return 1
+    except PublishNotMerged as e:
+        print(f"  ERROR: publish not merged — {e}", file=sys.stderr)
         return 1
 
     mode = "(DRY RUN — not pushed)" if args.dry_run else ""
